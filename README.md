@@ -1,4 +1,4 @@
-<h1 align="center">Halo CE · Apple Silicon</h1>
+<h1 align="center">Halo: Combat Evolved · Apple Silicon</h1>
 <p align="center">
   <img alt="Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple">
   <img alt="Original tooling license MIT" src="https://img.shields.io/badge/original%20tooling-MIT-blue">

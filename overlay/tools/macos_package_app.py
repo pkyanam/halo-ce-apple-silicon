@@ -314,7 +314,7 @@ def build(args: argparse.Namespace) -> dict:
                     "bundled_dylibs":{path.name:sha256(destinations[path]) for path in sorted(libraries)},
                     "signing":"ad-hoc", "native_launcher":True}
         (resources / "launch-config.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        plist = {"CFBundleDisplayName":"Halo Combat Evolved", "CFBundleName":"Halo Combat Evolved",
+        plist = {"CFBundleDisplayName":"Halo: Combat Evolved", "CFBundleName":"Halo: Combat Evolved",
                  "CFBundleExecutable":"Halo Combat Evolved", "CFBundleIconFile":"HaloCombatEvolved.icns",
                  "CFBundleIdentifier":"local.halo.native-aot", "CFBundlePackageType":"APPL",
                  "CFBundleVersion":"0.2", "CFBundleShortVersionString":"0.2",

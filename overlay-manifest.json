@@ -137,7 +137,7 @@
     "overlay/tools/macos_import_stubs.py": "a423d0526844606e8b2b67361396cc7ddad21c3b668b5ccfadb4fccbd14d690e",
     "overlay/tools/macos_lift_elf.py": "235674126dc8400af4c9f7f49d139e636cf20613973aa4baf594f3e750647f0c",
     "overlay/tools/macos_network_test_lock.py": "49f2301f57ecfd0a3317c87cb8143daefc89733c3810f7c5d4e8a30e6eaf39d2",
-    "overlay/tools/macos_package_app.py": "898373729ed6c0e76e485200736d04dba27341af3b30be94d233900061c1cf59",
+    "overlay/tools/macos_package_app.py": "038ff03006c70790e4fcdfba232cba773f63504fbaac2f523f03b0c76f209b8b",
     "overlay/tools/run_macos_aot_bounded.py": "63ca6114d8b875c6d9d4370ac7ec4724e0b85135944610db5df80b67d12aece3",
     "overlay/tools/run_macos_multiplayer_pair.py": "5e789d67dded24319ab97a595516eda3343fa23f5cee781e35c092751bc5d2eb",
     "overlay/tools/test_macos_display_cycle.py": "0d5f3390e0e22faab4683f38b3ef39f9c2e0c77857baadb9227331473cf683e1",
