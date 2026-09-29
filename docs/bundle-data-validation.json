@@ -1,0 +1,18 @@
+{
+  "status": "packaging-static-validation-passed",
+  "engine_runtime_acceptance": "not-exercised-by-this-check",
+  "asset_files": 29,
+  "asset_bytes": 2507736356,
+  "bundled_dylibs": 16,
+  "computed_minimum_macos": "26.0",
+  "checks": {
+    "relocated_unicode_and_spaces_path": true,
+    "external_source_assets_and_homebrew_reads_denied": true,
+    "all_bundled_asset_sha256_verified": true,
+    "strict_deep_ad_hoc_signature_verified": true,
+    "game_data_regular_independent_files": true,
+    "no_game_launch": true,
+    "no_user_state_created": true
+  },
+  "scope": "Portable bundler mechanics; final source revision requires a fresh build and runtime acceptance."
+}

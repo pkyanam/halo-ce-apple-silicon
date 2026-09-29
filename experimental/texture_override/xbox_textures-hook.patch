@@ -1,0 +1,95 @@
+--- a/port/linux/src/xbox_textures.c
++++ b/port/linux/src/xbox_textures.c
+@@ -16,6 +16,14 @@
+ 
+ #include "xgpu.h"
+ #include "port_config.h"
++
++#ifdef HALO_MACOS
++/* Optional original tooling; included here to keep the guest build unit unchanged. */
++#define TXO_GUEST_ABI 1
++#include "texture_override.c"
++#undef TXO_GUEST_ABI
++extern void p2p_sha256(const void *, int, unsigned char *);
++#endif
+ 
+ #include <stdio.h>
+ #ifdef HALO_ANDROID
+@@ -638,6 +646,64 @@
+ 	texture_dump(target, description);
+ }
+ 
++/* Experimental, default-original override; hashes only when the cache uploads.
++   The index is an explicit author-maintained color-texture allowlist, not an
++   assertion that every compressed texture is safe to replace. */
++#ifdef HALO_MACOS
++static BOOL experimental_texture_override_upload(GLuint texture, GLenum target,
++    const struct xgpu_texture_description *description, DWORD format_word, DWORD size_word,
++    const unsigned char *base, unsigned long bytes, const D3DCOLOR *palette)
++{
++    static struct txo_pack pack = { .directory_fd = -1 };
++    static int initialized, enabled, log_keys;
++    const struct txo_image *image;
++    struct xgpu_texture_description replacement;
++    char key[65];
++
++    if (!initialized)
++    {
++        const char *directory = getenv("HALO_TEXTURE_PACK");
++        const char *logging = getenv("HALO_TEXTURE_KEY_LOG");
++        initialized = 1;
++        log_keys = logging && !strcmp(logging, "1");
++        enabled = directory && *directory && txo_open(&pack, directory, p2p_sha256);
++        if (directory && *directory)
++            platform_log("experimental texture pack %s (%u mappings)",
++                enabled ? "enabled" : "rejected; using original textures", pack.count);
++    }
++    if ((!enabled && !log_keys) || !xgpu_capabilities.s3tc || palette ||
++        target != GL_TEXTURE_2D || description->linear || description->cube_map ||
++        description->depth != 1 || description->levels < 2 || !description->compressed ||
++        description->width > 1024 || description->height > 1024)
++        return FALSE;
++    if (!txo_source_key(p2p_sha256, format_word, size_word, base, (size_t)bytes, key))
++        return FALSE;
++    if (log_keys)
++        platform_log("texture source key %s fmt %02lx %lux%lu bytes %lu", key,
++            (unsigned long)description->format, description->width, description->height, bytes);
++    image = enabled ? txo_lookup(&pack, key, (uint32_t)description->width,
++        (uint32_t)description->height, (uint32_t)description->format) : NULL;
++    if (!image)
++        return FALSE;
++    /* Preserve the source cache identity and shader coordinate interpretation.
++       Only this upload's GPU dimensions and mip storage change. */
++    replacement = *description;
++    replacement.width = image->width; replacement.height = image->height;
++    replacement.levels = image->levels;
++    replacement.pitch = ((image->width + 3) / 4) * (image->xbox_format == 0x0c ? 8 : 16);
++    upload(texture, target, &replacement, image->payload, NULL);
++    if (glGetError() != GL_NO_ERROR)
++    {
++        platform_log("experimental texture upload failed; restoring original %s", key);
++        return FALSE;
++    }
++    platform_log("experimental texture override %s %lux%lu -> %ux%u bytes %lu resident %lu", key,
++        description->width, description->height, image->width, image->height,
++        (unsigned long)image->payload_bytes, (unsigned long)pack.resident_bytes);
++    return TRUE;
++}
++#endif
++
+ /* ---------- cache */
+ 
+ struct texture_entry
+@@ -785,7 +851,11 @@
+ 					entry->description.height, entry->size, entry->generation,
+ 					ones * 100 / entry->size, zeros * 100 / entry->size);
+ 			}
+-			upload(entry->texture, entry->target, &entry->description, (const unsigned char *)entry->address, palette);
++#ifdef HALO_MACOS
++            if (!experimental_texture_override_upload(entry->texture, entry->target, &entry->description,
++                    format_word, size_word, (const unsigned char *)entry->address, entry->size, palette))
++#endif
++                upload(entry->texture, entry->target, &entry->description, (const unsigned char *)entry->address, palette);
+ 		}
+ 	}
+ 	entry->last_used_frame = texture_frame;

@@ -1,0 +1,17 @@
+{
+  "fixture": "genuine-USA-Rev1-XDVDFS-tree",
+  "root_entries": [
+    "bink",
+    "default.xbe",
+    "maps",
+    "xdemos"
+  ],
+  "required_game_data": "24 Halo maps and5 Halo Bink movies; unrelated Xbox demo assets excluded",
+  "font_localization_source": "cache tags inmaps",
+  "writable_state": "Generated z:last_language.dat,z:cache files,u:UDATA and d:debug/core dumps are userstate; sealed asset directories are linked into writable data overlay",
+  "localized_data_policy": "Bundle recognized maps_de/fr/es/it and all Halo Bink movies if present; genuine localized image not validated",
+  "non_asset_roots_excluded": [
+    "default.xbe",
+    "xdemos"
+  ]
+}

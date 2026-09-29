@@ -1,0 +1,2 @@
+# Unified patch context has leading spaces/tabs and blank context lines.
+*.patch -whitespace

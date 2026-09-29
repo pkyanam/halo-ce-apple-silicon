@@ -1,0 +1,37 @@
+{
+  "status": "final-source-build-and-static-package-passed",
+  "date": "2026-09-29",
+  "scope": "Public pinned bootstrap in an isolated directory; all final guest units recompiled after display-control refresh, then complete link/lift/native build. No game launched by this build.",
+  "function_symbols": 12010,
+  "functions_translated": 12010,
+  "functions_failed": [],
+  "unresolved_direct_targets": [],
+  "binary_sha256": "8a29ae2df2e5769a92ed0d74eb3dfe753e1586213c26b24f681b4dbfa6670414",
+  "elf_sha256": "8232628ff489fa855054cb95188f92a486150f5784748f8c0fb7fbf539a20b6d",
+  "packaged_engine_sha256": "5e554ef17c9c3d1478756aa02f22bc0901c9ad754ab3e941d833cf79a1c12275",
+  "assets_bundled": true,
+  "asset_count": 29,
+  "asset_bytes": 2507736356,
+  "bundled_dylibs": 16,
+  "minimum_macos": "26.0",
+  "native_posix_tests": 5,
+  "fixtures": [
+    "actual SDL hidden-window resizing",
+    "Retina resolution/projection",
+    "F10 cycle and persistent TOML",
+    "UI predicate",
+    "intro ownership gate",
+    "multiplayer endpoint/lease guards",
+    "guest/native symbol namespaces",
+    "virtual gamepads",
+    "translated XInput",
+    "translated errno"
+  ],
+  "genuine_iso_validation": "docs/iso-validation.json",
+  "limits": [
+    "Local build used a verified user-provided USA Rev1 asset installation",
+    "Genuine ISO reader evidence used HTTP ranged reads rather than full-image extraction",
+    "CI synthetic assets exercise packaging only and never gameplay",
+    "Physical controllers, full mission completion and cross-platform peers remain unverified"
+  ]
+}

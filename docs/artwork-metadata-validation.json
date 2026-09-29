@@ -1,0 +1,36 @@
+{
+  "checks": [
+    {
+      "file": "docs/images/main-menu.png",
+      "sha256": "9035ad369da05bcb4f06a3b53e0fb6be097b4080496b284881b701af069c948c",
+      "metadata_chunks": [
+        {
+          "chunk": "eXIf",
+          "bytes": 138
+        },
+        {
+          "chunk": "iTXt",
+          "bytes": 472
+        }
+      ],
+      "private_metadata_or_strings_found": false,
+      "modified": false
+    },
+    {
+      "file": "overlay/port/macos/resources/master-chief-mark-v-icon.png",
+      "sha256": "cfd3c13f485f80f57b4721d33e564409e1d5fab3b0a928947f031bd6a98a24cc",
+      "metadata_chunks": [],
+      "private_metadata_or_strings_found": false,
+      "modified": false
+    },
+    {
+      "file": "overlay/port/macos/resources/HaloCombatEvolved.icns",
+      "sha256": "3d9b64e75fa06046a43027b93b28597efbf318a97b4dc6610e1704b3addf780d",
+      "metadata_chunks": [],
+      "private_metadata_or_strings_found": false,
+      "modified": false
+    }
+  ],
+  "supplied_screenshot_preserved_byte_for_byte": true,
+  "private_metadata_removed": false
+}

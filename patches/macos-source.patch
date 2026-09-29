@@ -1,0 +1,2304 @@
+--- a/port/android/guest/runtime/guest_host.h
++++ b/port/android/guest/runtime/guest_host.h
+@@ -44,6 +44,18 @@
+ void host_memory_watch_protect(unsigned int address, unsigned int size);
+ unsigned int host_memory_watch_generation(unsigned int address, unsigned int size);
+ unsigned int host_memory_watch_serial(void);
++#ifdef HALO_MACOS
++int host_memory_fingerprint_page(unsigned int address, unsigned long long *hashes);
++int host_memory_fingerprint_range(unsigned int address, unsigned int pages,
++	void *entries, volatile unsigned long *counter, unsigned long *newest);
++unsigned int host_bink_open(const char *path, void *info, int audio_enabled);
++int host_bink_decode(unsigned int token);
++int host_bink_next(unsigned int token, void *info);
++int host_bink_wait(unsigned int token);
++int host_bink_copy(unsigned int token, void *destination, int pitch,
++	unsigned int height, unsigned int x, unsigned int y, unsigned int flags);
++void host_bink_close(unsigned int token);
++#endif
+ void host_memory_watch_prepare_write(unsigned int address, unsigned int size);
+ void host_memory_watch_forget(unsigned int address, unsigned int size);
+ 
+@@ -59,6 +71,13 @@
+ long long host_sdl_thread_id(void);
+ unsigned int host_sdl_create_window(const char *title, int width, int height, long long flags);
+ void host_sdl_window_size_in_pixels(unsigned int window, int *width, int *height);
++#ifdef HALO_MACOS
++int host_sdl_window_size(unsigned int window, int *width, int *height);
++long long host_sdl_window_flags(unsigned int window);
++int host_sdl_set_window_fullscreen(unsigned int window, int enabled);
++int host_sdl_set_window_size(unsigned int window, int width, int height);
++int host_sdl_warp_mouse(unsigned int window, float x, float y);
++#endif
+ int host_sdl_set_relative_mouse(unsigned int window, int enabled);
+ int host_sdl_gl_set_attribute(int attribute, int value);
+ unsigned int host_sdl_gl_create_context(unsigned int window);
+--- a/port/android/guest/runtime/guest_sdl.c
++++ b/port/android/guest/runtime/guest_sdl.c
+@@ -115,6 +115,37 @@
+ 	return host_sdl_set_relative_mouse((unsigned int)window, enabled) != 0;
+ }
+ 
++#ifdef HALO_MACOS
++bool SDL_GetWindowSize(SDL_Window *window, int *width, int *height)
++{
++	int w = 0, h = 0;
++	int result = host_sdl_window_size((unsigned int)window, &w, &h);
++	if (width) *width = w;
++	if (height) *height = h;
++	return result != 0;
++}
++
++SDL_WindowFlags SDL_GetWindowFlags(SDL_Window *window)
++{
++	return (SDL_WindowFlags)host_sdl_window_flags((unsigned int)window);
++}
++
++bool SDL_SetWindowSize(SDL_Window *window, int width, int height)
++{
++	return host_sdl_set_window_size((unsigned int)window, width, height) != 0;
++}
++
++bool SDL_SetWindowFullscreen(SDL_Window *window, bool fullscreen)
++{
++	return host_sdl_set_window_fullscreen((unsigned int)window, fullscreen) != 0;
++}
++
++void SDL_WarpMouseInWindow(SDL_Window *window, float x, float y)
++{
++	(void)host_sdl_warp_mouse((unsigned int)window, x, y);
++}
++#endif
++
+ bool SDL_GL_SetAttribute(SDL_GLAttr attribute, int value)
+ {
+ 	return host_sdl_gl_set_attribute((int)attribute, value) != 0;
+--- a/port/linux/game/network_distributed.c
++++ b/port/linux/game/network_distributed.c
+@@ -799,6 +799,19 @@
+ 
+ /* (the host) a client's own players: the latest of each, taken at the next
+ tick */
++#ifdef HALO_MACOS
++/* Fixed-size counters and opt-in output; disabled in ordinary human play. */
++static void distributed_trace(short stage, long machine, long type, long tick, long count)
++{
++	static long enabled = -1, counters[10];
++	if (enabled < 0) enabled = getenv("HALO_NETWORK_TRACE") && strcmp(getenv("HALO_NETWORK_TRACE"), "1") == 0;
++	if (enabled && stage >= 0 && stage < 10 && (++counters[stage] <= 16 || counters[stage] % 300 == 0))
++		fprintf(stderr, "[mp-decoder] stage=%d n=%ld machine=%ld type=%ld tick=%ld count=%ld\n", (int)stage, counters[stage], machine, type, tick, count);
++}
++#else
++#define distributed_trace(stage,machine,type,tick,count) ((void)0)
++#endif
++
+ static void distributed_handle_predictions(
+ 	long machine_index,
+ 	struct distributed_unit_state const *states,
+@@ -813,8 +826,10 @@
+ 		if (state->player_index >= MAXIMUM_TRACKED_PLAYERS ||
+ 			!distributed_machine_has_player(machine_index, state->player_index))
+ 		{
++			distributed_trace(5, machine_index, state->player_index, state->unit_index, count);
+ 			continue;
+ 		}
++		distributed_trace(6, machine_index, state->player_index, state->unit_index, count);
+ 		distributed_predictions[state->player_index].valid = TRUE;
+ 		distributed_predictions[state->player_index].state = *state;
+ 	}
+@@ -843,6 +858,7 @@
+ 			real dy = state->position.y - object->object.position.y;
+ 			real dz = state->position.z - object->object.position.z;
+ 
++			distributed_trace(7, player_index, unit_index, (long)((dx * dx + dy * dy + dz * dz) * 1000.0f), game_time_get());
+ 			if (dx * dx + dy * dy + dz * dz <= HOST_ACCEPT_TOLERANCE * HOST_ACCEPT_TOLERANCE)
+ 				distributed_apply_state(unit_index, state, 0.0f, HOST_BLEND_DISTANCE);
+ 		}
+@@ -1016,11 +1032,13 @@
+ 		if (input->player_index >= MAXIMUM_TRACKED_PLAYERS ||
+ 			!distributed_machine_has_player(machine_index, input->player_index))
+ 		{
++			distributed_trace(8, machine_index, input->player_index, input->tick, count);
+ 			continue;
+ 		}
+ 		player = distributed_player(input->player_index);
+ 		if (!player)
+ 			continue;
++		distributed_trace(9, machine_index, input->player_index, input->tick, input->control_flags);
+ 		update_server_handle_distributed_input(DATUM_INDEX_NEW(input->player_index, player->identifier), input->tick,
+ 			&input->action, input->control_flags, DISTRIBUTED_INPUT_HISTORY);
+ 		if (input->host_time != NONE && machine_index >= 0 && machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+@@ -1681,6 +1699,7 @@
+ 	if (size < sizeof(header) || !network_game_distributed() || !game_in_progress())
+ 		return;
+ 	csmemcpy(&header, message, sizeof(header));
++	distributed_trace(0, machine_index, header.type, header.game_time, header.count);
+ 	/* a tick's messages in one: each as if it came alone */
+ 	if (header.type == _distributed_message_batch)
+ 	{
+@@ -1738,7 +1757,10 @@
+ 	case _distributed_message_vehicle_prediction:
+ 	case _distributed_message_player_inputs:
+ 		if (machine_index == NONE || game_connection() != _game_connection_network_server)
++		{
++			distributed_trace(1, machine_index, header.type, header.game_time, header.count);
+ 			return;
++		}
+ 		break;
+ 	default:
+ 		if (game_connection() != _game_connection_network_client)
+@@ -1750,7 +1772,11 @@
+ 		break;
+ 	}
+ 	if (distributed_message_stale(machine_index, &header))
++	{
++		distributed_trace(2, machine_index, header.type, header.game_time, header.count);
+ 		return;
++	}
++	distributed_trace(3, machine_index, header.type, header.game_time, header.count);
+ 
+ 	switch (header.type)
+ 	{
+--- a/port/linux/game/network_test.c
++++ b/port/linux/game/network_test.c
+@@ -28,6 +28,7 @@
+ */
+ 
+ #include "cseries.h"
++#include "bink/bink_playback.h"
+ #include "main/main.h"
+ #include "interface/player_ui.h"
+ #include "interface/ui_widget.h"
+@@ -437,6 +438,14 @@
+ 	}
+ }
+ 
++/* main_menu_scenario_loaded can already be true while the intro owns the
++ * texture-cache scratch pool. Host setup precaches its map using that same
++ * pool, so wait for normal movie disposal before starting the menu timer. */
++static boolean network_test_frontend_ready(boolean main_menu_loaded)
++{
++ return main_menu_loaded && !bink_playback_active();
++}
++
+ void network_test_update(
+ 	boolean main_menu_loaded,
+ 	real seconds)
+@@ -545,7 +554,7 @@
+ 		}
+ 	}
+ 
+-	if (!main_menu_loaded)
++	if (!network_test_frontend_ready(main_menu_loaded))
+ 		return;
+ 	network_test.menu_seconds += seconds;
+ 	/* (the main menu settling first) */
+--- a/port/linux/include/StdDef.h
++++ b/port/linux/include/StdDef.h
+@@ -1,2 +1,8 @@
+-/* the game includes <StdDef.h>; Linux file names are case sensitive */
++/* The game includes <StdDef.h>; Linux file names are case sensitive. On
++ * case-insensitive macOS filesystems this lowercase shim aliases StdDef.h
++ * itself, so skip this include directory to reach the target C library. */
++#if defined(HALO_MACOS)
++#include_next <stddef.h>
++#else
+ #include <stddef.h>
++#endif
+--- a/port/linux/include/halo_linux_prefix.h
++++ b/port/linux/include/halo_linux_prefix.h
+@@ -47,7 +47,7 @@
+ 
+ /* ---------- __declspec(selectany) data (XDK D3DCONST tables) */
+ 
+-#define DECLSPEC_SELECTANY __attribute__((weak))
++#define DECLSPEC_SELECTANY __attribute__((__weak__))
+ 
+ /* ---------- MSVC intrinsics
+ 
+--- a/port/linux/src/bink_null.c
++++ b/port/linux/src/bink_null.c
+@@ -11,11 +11,24 @@
+ */
+ 
+ #include "platform.h"
++#ifdef HALO_MACOS
++#include "guest_host.h"
++#include "port_config.h"
++#include <string.h>
++#endif
+ 
+ typedef void *(__stdcall *rad_memory_allocate_proc)(unsigned long size);
+ typedef void (__stdcall *rad_memory_free_proc)(void *memory);
+ typedef void *(__stdcall *bink_sound_system_open_proc)(unsigned long param);
+ typedef struct BINK *HBINK;
++#ifdef HALO_MACOS
++struct BINK
++{
++	unsigned long Width, Height, Frames, FrameNum, LastFrameNum;
++	unsigned int native_token;
++};
++typedef char bink_wire_size_must_be_24[sizeof(struct BINK) == 24 ? 1 : -1];
++#endif
+ 
+ void __stdcall RADSetMemory(rad_memory_allocate_proc allocate, rad_memory_free_proc release)
+ {
+@@ -25,15 +38,24 @@
+ 
+ void *__stdcall BinkOpenDirectSound(unsigned long param)
+ {
++#ifdef HALO_MACOS
++	return (void *)param;
++#else
+ 	(void)param;
+ 	return NULL;
++#endif
+ }
+ 
+ long __stdcall BinkSetSoundSystem(bink_sound_system_open_proc open, unsigned long param)
+ {
+ 	(void)open;
+ 	(void)param;
+-	return 0;
++	return
++#ifdef HALO_MACOS
++		1;
++#else
++		0;
++#endif
+ }
+ 
+ void __stdcall BinkSetIOSize(unsigned long io_size)
+@@ -44,10 +66,55 @@
+ HBINK __stdcall BinkOpen(const char *name, unsigned long flags)
+ {
+ 	(void)flags;
++#ifdef HALO_MACOS
++	char path[1024];
++	HBINK movie = calloc(1, sizeof(*movie));
++	if (!movie) return NULL;
++	platform_translate_path(name, path, sizeof(path));
++	movie->native_token = host_bink_open(path, movie, config_boolean("audio.enabled"));
++	if (!movie->native_token) { free(movie); platform_log("native Bink cannot open %s", path); return NULL; }
++	return movie;
++#else
+ 	platform_log("Bink video is not supported; skipping \"%s\"", name ? name : "");
+ 	return NULL;
++#endif
+ }
+ 
++/* The native adapter owns codec/audio objects; the guest owns only this
++ * wire record. Closing/skipping releases both sides immediately. */
++#ifdef HALO_MACOS
++void __stdcall BinkClose(HBINK movie) { if (movie) { host_bink_close(movie->native_token); free(movie); } }
++long __stdcall BinkDoFrame(HBINK movie)
++{
++	if (!movie || !host_bink_decode(movie->native_token)) host_abort("native Bink video decode failed");
++	return 0;
++}
++void __stdcall BinkNextFrame(HBINK movie)
++{
++	if (!movie || !host_bink_next(movie->native_token, movie)) host_abort("native Bink frame state failed");
++}
++long __stdcall BinkWait(HBINK movie) { return movie ? host_bink_wait(movie->native_token) : 0; }
++long __stdcall BinkCopyToBuffer(HBINK movie, void *destination, long pitch,
++	unsigned long height, unsigned long x, unsigned long y, unsigned long flags)
++{
++	if (!movie || !host_bink_copy(movie->native_token, destination, pitch, height, x, y, flags))
++		host_abort("native Bink destination span or format invalid");
++	return 0;
++}
++void __stdcall BinkGetSummary(HBINK movie, void *summary)
++{
++	unsigned long *words = summary;
++	memset(summary, 0, 31 * sizeof(unsigned long));
++	if (movie) { words[0] = movie->Width; words[1] = movie->Height; words[8] = movie->Frames; words[9] = movie->FrameNum; }
++}
++void __stdcall BinkGetRealtime(HBINK movie, void *realtime, unsigned long frame_count)
++{
++	unsigned long *words = realtime;
++	(void)frame_count;
++	memset(realtime, 0, 14 * sizeof(unsigned long));
++	if (movie) { words[0] = movie->FrameNum; words[3] = movie->FrameNum ? movie->FrameNum : 1; }
++}
++#else
+ /* never reached without an open movie */
+ 
+ void __stdcall BinkClose(HBINK bink) { (void)bink; }
+@@ -66,3 +133,4 @@
+ 
+ void __stdcall BinkGetSummary(HBINK bink, void *summary) { (void)bink; (void)summary; }
+ void __stdcall BinkGetRealtime(HBINK bink, void *realtime, unsigned long frame_count) { (void)bink; (void)realtime; (void)frame_count; }
++#endif
+--- a/port/linux/src/d3d8_gl.c
++++ b/port/linux/src/d3d8_gl.c
+@@ -25,6 +25,9 @@
+ #include "sdl_platform.h"
+ #include "halo_ui_pointer.h"
+ #include "port_config.h"
++#ifdef HALO_MACOS
++#include "../../macos/gl41_compat.h"
++#endif
+ 
+ #include <math.h>
+ #include <stdio.h>
+@@ -35,7 +38,7 @@
+ void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
+ void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ /* OpenGL ES 3 (port/android/README.md): the desktop formats, enumerants
+ and entry points used below that ES lacks */
+ #define GL_BGRA GL_RGBA
+@@ -51,7 +54,10 @@
+ #define GL_CLAMP_TO_BORDER 0x812d
+ #endif
+ 
+-/* what the context supports (gl_initialize) */
++#endif
++
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
++/* Capabilities are initialized from the actual current GL context. */
+ struct xgpu_capabilities xgpu_capabilities;
+ #endif
+ 
+@@ -84,7 +90,19 @@
+ 
+ static void screen_mode_choose(long *width, float scale[2])
+ {
+-#ifdef HALO_ANDROID
++#ifdef HALO_MACOS
++	long render_width, render_height;
++	if (platform_render_resolution(&render_width, &render_height))
++	{
++		/* Widen the camera's logical viewport; keep the original vertical
++		   FOV and centered 640-column UI. Targets use explicit pixel sizes. */
++		*width = ((SCREEN_HEIGHT * render_width + render_height / 2) / render_height + 1) & ~1L;
++		scale[0] = (float)render_width / (float)*width;
++		scale[1] = (float)render_height / (float)SCREEN_HEIGHT;
++		return;
++	}
++#endif
++	#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	/* display.screen_width, or 0 for the display's shape, which the app
+ 	passes (port/android/host/host_main.c) */
+ 	const char *display = getenv("HALO_DISPLAY_WIDTH");
+@@ -108,6 +126,14 @@
+ 		long wanted = (SCREEN_HEIGHT * display_width + display_height / 2) / display_height;
+ 
+ 		*width = wanted < 640 ? 640 : wanted > SCREEN_MAXIMUM_WIDTH ? SCREEN_MAXIMUM_WIDTH : wanted & ~1L;
++		/* Keep logical coordinates and aspect fixed while choosing a smaller
++		fullscreen render target. The existing display blit fills the desktop. */
++		long render_width = config_integer("display.render_width");
++		if (render_width >= 640 && render_width < display_width)
++		{
++			display_height = (display_height * render_width + display_width / 2) / display_width;
++			display_width = render_width;
++		}
+ 		scale[0] = (float)display_width / (float)*width;
+ 		scale[1] = (float)display_height / (float)SCREEN_HEIGHT;
+ 		/* a display narrower or wider than the game can be: the picture
+@@ -720,7 +746,7 @@
+ 	return shader;
+ }
+ 
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity,
+ 	GLsizei length, const GLchar *message, const void *user)
+ {
+@@ -750,6 +776,16 @@
+ 	struct render_target_entry *entry;
+ 	unsigned long width, height;
+ 	BOOL depth;
++	static unsigned trace_allocations;
++	unsigned trace_index = 0;
++	if (getenv("HALO_TRACE_RT_ALLOC") && trace_allocations < 32)
++	{
++		trace_index = ++trace_allocations;
++		fprintf(stderr, "[rt-alloc] #%u input surface=%p common=0x%08x data=0x%08x format=0x%08x size=0x%08x\n",
++			trace_index, (const void *)surface, surface ? (unsigned)surface->Common : 0,
++			surface ? (unsigned)surface->Data : 0, surface ? (unsigned)surface->Format : 0,
++			surface ? (unsigned)surface->Size : 0);
++	}
+ 
+ 	if (!surface || !surface->Data)
+ 		return NULL;
+@@ -780,6 +816,14 @@
+ 	entry->target.scale[1] = scale[1];
+ 	entry->target.gl_width = (unsigned long)(width * scale[0] + 0.5f);
+ 	entry->target.gl_height = (unsigned long)(height * scale[1] + 0.5f);
++	if (trace_index)
++	{
++		union { float f; unsigned bits; } scale_x = { .f = scale[0] }, scale_y = { .f = scale[1] };
++		fprintf(stderr, "[rt-alloc] #%u decoded=%lux%lu depth=%d scale={0x%08x/%.9g,0x%08x/%.9g} gl=%lux%lu data=0x%08lx format=0x%08x size=0x%08x\n",
++			trace_index, width, height, (int)depth, scale_x.bits, scale_x.f, scale_y.bits, scale_y.f,
++			entry->target.gl_width, entry->target.gl_height, (unsigned long)surface->Data,
++			(unsigned)surface->Format, (unsigned)surface->Size);
++	}
+ 	glGenTextures(1, &entry->target.texture);
+ 	glBindTexture(GL_TEXTURE_2D, entry->target.texture);
+ 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+@@ -789,6 +833,10 @@
+ 	else
+ 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)entry->target.gl_width, (GLsizei)entry->target.gl_height,
+ 			0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
++	if (trace_index)
++		fprintf(stderr, "[rt-alloc] #%u uploaded texture=%u size=%lux%lu depth=%d gl-error=0x%04x\n",
++			trace_index, entry->target.texture, entry->target.gl_width, entry->target.gl_height,
++			(int)depth, (unsigned)glGetError());
+ 	xgpu_gl_state_invalidate();
+ 	entry->next = render_targets;
+ 	render_targets = entry;
+@@ -876,7 +924,7 @@
+ 
+ 	glGetIntegerv(GL_MAJOR_VERSION, &major);
+ 	glGetIntegerv(GL_MINOR_VERSION, &minor);
+-#ifdef HALO_ANDROID
++	#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	{
+ 		BOOL es32 = major > 3 || (major == 3 && minor >= 2);
+ 
+@@ -903,6 +951,21 @@
+ 			(int)major, (int)minor, xgpu_capabilities.copy_image, xgpu_capabilities.border_clamp,
+ 			xgpu_capabilities.anisotropy, xgpu_capabilities.s3tc, xgpu_capabilities.atomic_counters);
+ 	}
++#elif defined(HALO_MACOS)
++	/* OpenGL 4.1 has neither clip control nor core KHR_debug. The vertex
++	shader performs the clip-origin/depth conversion for this context. */
++	static char glsl_version[4];
++	xgpu_capabilities.copy_image = FALSE;
++	/* GL_CLAMP_TO_BORDER is core long before the required 4.1 context. */
++	xgpu_capabilities.border_clamp = TRUE;
++	xgpu_capabilities.anisotropy = host_gl_has_extension("GL_EXT_texture_filter_anisotropic");
++	xgpu_capabilities.s3tc = host_gl_has_extension("GL_EXT_texture_compression_s3tc");
++	xgpu_capabilities.base_vertex = major > 3 || (major == 3 && minor >= 2);
++	/* Fragment atomic counters entered desktop GL in 4.2, after Apple's 4.1 cap. */
++	xgpu_capabilities.atomic_counters = FALSE;
++	snprintf(glsl_version, sizeof(glsl_version), "%d", (int)major * 100 + (int)minor * 10);
++	xgpu_capabilities.shading_language = glsl_version;
++	glEnable(GL_PROGRAM_POINT_SIZE);
+ #else
+ 	if (config_boolean("debug.gl_debug"))
+ 	{
+@@ -942,7 +1005,7 @@
+ #endif
+ 	glGenSamplers(D3DTSS_MAXSTAGES, device.samplers);
+ 	glGenQueries(VISIBILITY_TEST_SLOTS, device.queries);
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	glGenBuffers(1, &device.visibility_results_buffer);
+ 	glBindBuffer(GL_QUERY_BUFFER, device.visibility_results_buffer);
+ 	glBufferStorage(GL_QUERY_BUFFER, VISIBILITY_TEST_SLOTS * sizeof(GLuint), NULL,
+@@ -1129,7 +1192,7 @@
+ 
+ /* ---------- the menus' pointer */
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer)
+ {
+ 	(void)menus_active;
+@@ -1204,7 +1267,7 @@
+ 		screen_width = width;
+ 		screen_scale[0] = scale[0];
+ 		screen_scale[1] = scale[1];
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		if (device.created)
+ 		{
+ 			device.presentation.BackBufferWidth = (UINT)width;
+@@ -1394,7 +1457,7 @@
+ 	device.queries[0] = device.queries[index];
+ 	device.queries[index] = scratch;
+ 	device.query_pending[index] = TRUE;
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	if (device.visibility_results)
+ 	{
+ 		/* the GPU writes the count into the slot once it is known */
+@@ -1442,7 +1505,7 @@
+ 		return S_OK;
+ 	}
+ #endif
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	if (device.visibility_results)
+ 	{
+ 		/* the latest count the GPU has written: from this test, or while
+@@ -2066,7 +2129,7 @@
+ 
+ static struct mip_composite *mip_composites;
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ static GLuint framebuffer_get(GLuint color, GLuint depth);
+ 
+ /* glCopyImageSubData for ES 3.0/3.1 contexts without the extension */
+@@ -2085,6 +2148,35 @@
+ 	/* the blit bypasses the cached state, so the next draw must re-apply it */
+ 	xgpu_gl_state_invalidate();
+ }
++#elif defined(HALO_MACOS)
++/* OpenGL 4.1 has no core glCopyImageSubData. Copy through private FBOs and
++restore independent READ/DRAW bindings plus scissor after each mip copy. */
++static struct halo_gl41_copy_state macos_copy_state;
++
++static void macos_draw_buffer(GLenum buffer)
++{
++	glDrawBuffers(1, &buffer);
++}
++
++static int copy_level_by_blit(GLuint source, GLuint destination, GLint level, GLsizei width, GLsizei height)
++{
++	const struct halo_gl41_copy_api api = {
++		halo_glGetIntegerv,
++		halo_glIsEnabled,
++		halo_glEnable,
++		halo_glDisable,
++		halo_glGenFramebuffers,
++		halo_glBindFramebuffer,
++		halo_glFramebufferTexture2D,
++		halo_glReadBuffer,
++		macos_draw_buffer,
++		halo_glCheckFramebufferStatus,
++		halo_glBlitFramebuffer,
++	};
++
++	return halo_gl41_copy_image_2d(&api, &macos_copy_state, source, 0,
++		destination, level, width, height);
++}
+ #endif
+ 
+ static GLuint mip_composite_get(const struct xgpu_texture_description *description, unsigned long data)
+@@ -2131,15 +2223,27 @@
+ 		if (!target || target->width != width || target->height != height ||
+ 			target->gl_width != width || target->gl_height != height)
+ 			break;
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 		if (!xgpu_capabilities.copy_image)
+ 		{
+ 			copy_level_by_blit(target->texture, composite->texture, (GLint)level, (GLsizei)width, (GLsizei)height);
+ 		}
+ 		else
+-#endif
++		{
++			glCopyImageSubData(target->texture, GL_TEXTURE_2D, 0, 0, 0, 0,
++				composite->texture, GL_TEXTURE_2D, (GLint)level, 0, 0, 0, (GLsizei)width, (GLsizei)height, 1);
++		}
++#elif defined(HALO_MACOS)
++		if (!copy_level_by_blit(target->texture, composite->texture, (GLint)level,
++			(GLsizei)width, (GLsizei)height))
++		{
++			platform_log("cannot copy mip %lu of render target texture %u through OpenGL 4.1", level, target->texture);
++			break;
++		}
++#else
+ 		glCopyImageSubData(target->texture, GL_TEXTURE_2D, 0, 0, 0, 0,
+ 			composite->texture, GL_TEXTURE_2D, (GLint)level, 0, 0, 0, (GLsizei)width, (GLsizei)height, 1);
++#endif
+ 		rendered_levels++;
+ 	}
+ 	glBindTexture(GL_TEXTURE_2D, composite->texture);
+@@ -2359,7 +2463,7 @@
+ 	state_enable(&gl_state.cull_face, GL_CULL_FACE, rs[D3DRS_CULLMODE] != D3DCULL_NONE);
+ 	if (rs[D3DRS_CULLMODE] != D3DCULL_NONE)
+ 	{
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		/* the vertex shader flips y in clip space, which (unlike desktop
+ 		GL's upper-left clip origin) also flips the winding */
+ 		GLenum front_face = rs[D3DRS_FRONTFACE] == D3DFRONT_CCW ? GL_CW : GL_CCW;
+@@ -2509,7 +2613,7 @@
+ 	key.alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
+ 	key.fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
+ 	key.fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	key.count_samples = device.visibility_test_active && xgpu_capabilities.atomic_counters;
+ #endif
+ 
+@@ -2526,7 +2630,7 @@
+ 	else
+ 		stats.draws++;
+ 	state_program(entry->program);
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	if (key.count_samples)
+ 		glBindBufferRange(GL_ATOMIC_COUNTER_BUFFER, 0, device.visibility_counters,
+ 			(GLintptr)(device.counter_active * sizeof(GLuint)), sizeof(GLuint));
+--- a/port/linux/src/gl.h
++++ b/port/linux/src/gl.h
+@@ -16,7 +16,7 @@
+ #ifndef _WIN32
+ #undef APIENTRY
+ #endif
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ #include <GLES3/gl32.h>
+ #include <GLES2/gl2ext.h>
+ #define GLAPIENTRY GL_APIENTRY
+@@ -25,7 +25,7 @@
+ #endif
+ #pragma pop_macro("APIENTRY")
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ /* OpenGL ES 3.2 (port/android/README.md); tools/android_gl_stubs.py reads
+ this list to generate the guest's entry points */
+ /* ANDROID_GL_FUNCTIONS_BEGIN */
+@@ -131,13 +131,25 @@
+ 	X(glGetQueryObjectuiv)
+ /* ANDROID_GL_FUNCTIONS_END */
+ #else
++#ifdef HALO_MACOS
++#define HALO_GL_COPY_IMAGE(X)
++#define HALO_GL_CLIP_CONTROL(X)
++#define HALO_GL_BUFFER_STORAGE(X)
++#define HALO_GL_DEBUG_CALLBACK(X)
++#else
++#define HALO_GL_COPY_IMAGE(X) X(glCopyImageSubData)
++#define HALO_GL_CLIP_CONTROL(X) X(glClipControl)
++#define HALO_GL_BUFFER_STORAGE(X) X(glBufferStorage)
++#define HALO_GL_DEBUG_CALLBACK(X) X(glDebugMessageCallback)
++#endif
+ #define GL_FUNCTIONS(X) \
+ 	X(glGetString) \
+ 	X(glGetIntegerv) \
+ 	X(glGetTexImage) \
+-	X(glCopyImageSubData) \
++	HALO_GL_COPY_IMAGE(X) \
+ 	X(glGenerateMipmap) \
+ 	X(glGetError) \
++	X(glIsEnabled) \
+ 	X(glEnable) \
+ 	X(glDisable) \
+ 	X(glViewport) \
+@@ -165,7 +177,7 @@
+ 	X(glReadPixels) \
+ 	X(glFinish) \
+ 	X(glFlush) \
+-	X(glClipControl) \
++	HALO_GL_CLIP_CONTROL(X) \
+ 	X(glGenTextures) \
+ 	X(glDeleteTextures) \
+ 	X(glBindTexture) \
+@@ -191,12 +203,14 @@
+ 	X(glCheckFramebufferStatus) \
+ 	X(glBlitFramebuffer) \
+ 	X(glDrawBuffers) \
++	X(glReadBuffer) \
+ 	X(glGenBuffers) \
+ 	X(glDeleteBuffers) \
+ 	X(glBindBuffer) \
+ 	X(glBufferData) \
+ 	X(glBufferSubData) \
+-	X(glBufferStorage) \
++	X(glBindBufferRange) \
++	HALO_GL_BUFFER_STORAGE(X) \
+ 	X(glMapBufferRange) \
+ 	X(glBindBufferBase) \
+ 	X(glGenVertexArrays) \
+@@ -234,7 +248,7 @@
+ 	X(glBeginQuery) \
+ 	X(glEndQuery) \
+ 	X(glGetQueryObjectuiv) \
+-	X(glDebugMessageCallback)
++	HALO_GL_DEBUG_CALLBACK(X)
+ #endif
+ 
+ #define GL_DECLARE_FUNCTION(name) extern __typeof__(&name) halo_##name;
+@@ -244,10 +258,12 @@
+ /* call sites use the ordinary names; gl_functions.c, which defines the
+ pointers, sees the declarations without these aliases */
+ #ifndef GL_FUNCTIONS_DEFINE
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ #define glGetString halo_glGetString
+ #define glGetIntegerv halo_glGetIntegerv
++#ifndef HALO_MACOS
+ #define glCopyImageSubData halo_glCopyImageSubData
++#endif
+ #define glGenerateMipmap halo_glGenerateMipmap
+ #define glGetError halo_glGetError
+ #define glEnable halo_glEnable
+@@ -348,7 +364,11 @@
+ #define glGetString halo_glGetString
+ #define glGetIntegerv halo_glGetIntegerv
+ #define glGetTexImage halo_glGetTexImage
++#define glIsEnabled halo_glIsEnabled
++#define glReadBuffer halo_glReadBuffer
++#ifndef HALO_MACOS
+ #define glCopyImageSubData halo_glCopyImageSubData
++#endif
+ #define glGenerateMipmap halo_glGenerateMipmap
+ #define glGetError halo_glGetError
+ #define glEnable halo_glEnable
+--- a/port/linux/src/halo_linker_common.c
++++ b/port/linux/src/halo_linker_common.c
+@@ -25,7 +25,7 @@
+ /* ---------- pooled COMMON globals */
+ 
+ #define HALO_COMMON(name, size) \
+-	__attribute__((weak, aligned(16))) unsigned char name[size]
++	__attribute__((__weak__, aligned(16))) unsigned char name[size]
+ 
+ HALO_COMMON(ai_globals, 12); /* struct ai_globals_data *ai_globals */
+ HALO_COMMON(antenna_data, 12); /* struct data_array *antenna_data */
+@@ -168,14 +168,14 @@
+ 
+ /* Round-to-integer as the x87 does in the current rounding mode, like the
+ inline fast_ftol in cseries.h (fld/fistp). */
+-__attribute__((weak)) long fast_ftol_C(float value)
++__attribute__((__weak__)) long fast_ftol_C(float value)
+ {
+ 	return lrintf(value);
+ }
+ 
+ /* The debug console's "crash" command, which deliberately brings the game
+ down to exercise crash handling. */
+-__attribute__((weak)) void main_crash(const char *reason)
++__attribute__((__weak__)) void main_crash(const char *reason)
+ {
+ 	platform_log("main_crash: %s", reason ? reason : "");
+ 	abort();
+--- a/port/linux/src/memory_watch.c
++++ b/port/linux/src/memory_watch.c
+@@ -17,7 +17,193 @@
+ renderer can protect the pages again before the kernel writes them.
+ */
+ 
++#if defined(HALO_MACOS) && defined(HALO_MEMORY_WATCH_TEST)
++#include "memory_watch_test_platform.h"
++#else
+ #include "platform.h"
++#endif
++
++#ifdef HALO_MACOS
++
++#ifdef HALO_MEMORY_WATCH_TEST_ARENA
++extern unsigned char halo_watch_test_arena[];
++#undef PLATFORM_CONTIGUOUS_BASE
++#define PLATFORM_CONTIGUOUS_BASE ((unsigned long)halo_watch_test_arena)
++#undef PLATFORM_CONTIGUOUS_SIZE
++#define PLATFORM_CONTIGUOUS_SIZE 0x10000UL
++#endif
++
++/*
++Darwin's AOT host does not currently install the source port's signal-based
++write watch.  Do not report a stable generation in its place: both texture
++lookup and the vertex/index mirror use generations to skip reading guest
++bytes.  Instead, fingerprint the requested 4 KiB pages on each query.  This
++is deliberately a correctness fallback; it trades CPU time for not reusing
++GPU copies based on an unwatched page.
++
++There is no mprotect here, and the serial changes on every lookup so the
++renderer cannot take its recent-texture shortcut without checking the
++resource pages.  `prepare_write` and `forget` invalidate fingerprints so a
++write/free/reuse is also observed even if the bytes happen to compare equal
++at the first query after the event.
++*/
++
++#include <stdint.h>
++#include <pthread.h>
++#include <string.h>
++#ifndef HALO_MEMORY_WATCH_TEST
++#include "guest_host.h"
++#endif
++
++#define WATCH_PAGE_SIZE 0x1000UL
++#define WATCH_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / WATCH_PAGE_SIZE)
++
++struct page_fingerprint
++{
++	uint64_t first;
++	uint64_t second;
++	unsigned long generation;
++	unsigned char valid;
++};
++
++static struct page_fingerprint page_fingerprints[WATCH_PAGE_COUNT];
++static volatile unsigned long current_generation = 1;
++static pthread_mutex_t fingerprint_lock = PTHREAD_MUTEX_INITIALIZER;
++
++static BOOL watched_span(unsigned long address, unsigned long size,
++	unsigned long *first, unsigned long *last)
++{
++	unsigned long offset;
++
++	if (!size || address < PLATFORM_CONTIGUOUS_BASE)
++		return FALSE;
++	offset = address - PLATFORM_CONTIGUOUS_BASE;
++	if (offset >= PLATFORM_CONTIGUOUS_SIZE || size > PLATFORM_CONTIGUOUS_SIZE - offset)
++		return FALSE;
++	if (!platform_is_contiguous((void *)address) ||
++		!platform_is_contiguous((void *)(address + size - 1)))
++		return FALSE;
++	*first = offset / WATCH_PAGE_SIZE;
++	*last = (offset + size - 1) / WATCH_PAGE_SIZE;
++	return *last < WATCH_PAGE_COUNT;
++}
++
++#ifdef HALO_MEMORY_WATCH_TEST
++static void fingerprint_page(unsigned long page, uint64_t *first, uint64_t *second)
++{
++#ifndef HALO_MEMORY_WATCH_TEST
++	/* Preserve both fingerprints and every lookup scan. Only the expensive
++	 * byte loop leaves translated i386 code; no write is assumed absent. */
++	unsigned long long hashes[2];
++	if (!host_memory_fingerprint_page(PLATFORM_CONTIGUOUS_BASE + page * WATCH_PAGE_SIZE, hashes))
++		host_abort("invalid guest span in memory page fingerprint");
++	*first = hashes[0];
++	*second = hashes[1];
++#else
++	const volatile unsigned char *bytes = (const volatile unsigned char *)(
++		PLATFORM_CONTIGUOUS_BASE + page * WATCH_PAGE_SIZE);
++	uint64_t a = UINT64_C(14695981039346656037);
++	uint64_t b = UINT64_C(0x9e3779b97f4a7c15);
++	unsigned long index;
++
++	for (index = 0; index < WATCH_PAGE_SIZE; index++)
++	{
++		uint64_t value = bytes[index];
++		a = (a ^ value) * UINT64_C(1099511628211);
++		b ^= value + UINT64_C(0x9e3779b97f4a7c15) + (b << 6) + (b >> 2);
++		b *= UINT64_C(0xbf58476d1ce4e5b9);
++	}
++	*first = a;
++	*second = b;
++#endif
++}
++#endif
++
++void memory_watch_initialize(void)
++{
++	/* Zero-initialized fingerprints are ready; this backend never protects pages. */
++}
++
++void memory_watch_protect(unsigned long address, unsigned long size)
++{
++	/* No page protection is installed. Every generation query fingerprints bytes. */
++	(void)address;
++	(void)size;
++}
++
++unsigned long memory_watch_generation(unsigned long address, unsigned long size)
++{
++	unsigned long first_page, last_page, newest = 0;
++#ifdef HALO_MEMORY_WATCH_TEST
++	unsigned long page;
++#else
++	typedef char fingerprint_wire_size_must_be_24[sizeof(struct page_fingerprint) == 24 ? 1 : -1];
++#endif
++
++	if (!watched_span(address, size, &first_page, &last_page))
++		return 0;
++	pthread_mutex_lock(&fingerprint_lock);
++#ifndef HALO_MEMORY_WATCH_TEST
++	/* The native range loop implements the same per-page comparison and
++	 * generation updates, including invalidated entries, in one ABI call. */
++	if (!host_memory_fingerprint_range(PLATFORM_CONTIGUOUS_BASE + first_page * WATCH_PAGE_SIZE,
++		last_page - first_page + 1, &page_fingerprints[first_page], &current_generation, &newest))
++		host_abort("invalid guest span in memory range fingerprint");
++#else
++	for (page = first_page; page <= last_page; page++)
++	{
++		struct page_fingerprint *entry = &page_fingerprints[page];
++		uint64_t first, second;
++
++		fingerprint_page(page, &first, &second);
++		if (!entry->valid || entry->first != first || entry->second != second)
++		{
++			entry->first = first;
++			entry->second = second;
++			entry->valid = 1;
++			entry->generation = __sync_add_and_fetch(&current_generation, 1);
++		}
++		if (entry->generation > newest)
++			newest = entry->generation;
++	}
++#endif
++	pthread_mutex_unlock(&fingerprint_lock);
++	return newest;
++}
++
++unsigned long memory_watch_serial(void)
++{
++	/* Force callers to validate their own ranges instead of trusting a global
++	serial that cannot identify which guest pages have changed. */
++	return __sync_add_and_fetch(&current_generation, 1);
++}
++
++static void invalidate_span(unsigned long address, unsigned long size)
++{
++	unsigned long first_page, last_page, page;
++
++	if (!watched_span(address, size, &first_page, &last_page))
++		return;
++	pthread_mutex_lock(&fingerprint_lock);
++	for (page = first_page; page <= last_page; page++)
++	{
++		page_fingerprints[page].valid = 0;
++		page_fingerprints[page].generation = __sync_add_and_fetch(&current_generation, 1);
++	}
++	pthread_mutex_unlock(&fingerprint_lock);
++}
++
++void memory_watch_prepare_write(void *address, unsigned long size)
++{
++	invalidate_span((unsigned long)address, size);
++}
++
++void memory_watch_forget(void *address, unsigned long size)
++{
++	invalidate_span((unsigned long)address, size);
++}
++
++#else
+ 
+ #include <execinfo.h>
+ #include <signal.h>
+@@ -194,3 +380,5 @@
+ 		page_generation[page] = __sync_add_and_fetch(&current_generation, 1);
+ 	}
+ }
++
++#endif /* HALO_MACOS */
+--- a/port/linux/src/msvc_crt.c
++++ b/port/linux/src/msvc_crt.c
+@@ -295,7 +295,7 @@
+ 	return word;
+ }
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ /* AArch64: the rounding mode lives in FPCR.RMode, the sticky exception
+ flags in FPSR. Precision control and exception unmasking have no
+ equivalent; the rest of the MSVC control word is only remembered. */
+--- a/port/linux/src/nv2a_psh.c
++++ b/port/linux/src/nv2a_psh.c
+@@ -323,6 +323,9 @@
+ 	"precision highp sampler2D;\n" \
+ 	"precision highp sampler3D;\n" \
+ 	"precision highp samplerCube;\n"
++#elif defined(HALO_MACOS)
++#define SAMPLE_BIAS ""
++#define SHADER_VERSION "#version 410 core\n"
+ #else
+ #define SAMPLE_BIAS ""
+ #define SHADER_VERSION "#version 450 core\n"
+--- a/port/linux/src/nv2a_vsh.c
++++ b/port/linux/src/nv2a_vsh.c
+@@ -144,6 +144,8 @@
+ 	/* the #version line comes first, from the context's capabilities */
+ 	"precision highp float;\n"
+ 	"precision highp int;\n"
++#elif defined(HALO_MACOS)
++	"#version 410 core\n"
+ #else
+ 	"#version 450 core\n"
+ #endif
+@@ -232,7 +234,7 @@
+ 		"\tvec4 oFog = vec4(1.0), oPts = vec4(point_size), oUnused = vec4(0.0);\n"
+ 		"\tint a0 = 0;\n"
+ 		"\tvec4 A, B, C, mac, ilu;\n");
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 	xgpu_text_append(&text, "\tvec4 clip_position = vec4(0.0);\n\tbool clip_captured = false;\n");
+ #endif
+ 
+@@ -286,7 +288,7 @@
+ 		case _ilu_lit: xgpu_text_append(&text, "\tilu = nv2a_lit(C);\n"); break;
+ 		default: xgpu_text_append(&text, "\tilu = vec4(0.0);\n"); break;
+ 		}
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		/* the screen-space conversion takes the reciprocal of the clip-space
+ 		position's w (rcc of r12.w); keep the position it converts */
+ 		if (ilu == _ilu_rcc && field(instruction, 3, 28, 2) == _mux_temporary &&
+@@ -340,7 +342,7 @@
+ 		/* Direct3D 8 puts pixel centres on integer screen coordinates (the
+ 		game offsets its screen-space quads by -0.5 to match), OpenGL on
+ 		half-integers */
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		/* The conversion is screen = clip * c[-38] * rcc(w) + c[-37]; undoing
+ 		it by multiplying by w again is lossy near the camera plane, where
+ 		rcc clamps and 1/w rounds differently on each GPU (Mali put vertices
+@@ -355,7 +357,7 @@
+ 		"\tvec3 ndc = (vec3(oPos.xy + vec2(0.5 + screen_offset, 0.5), oPos.z) - viewport_offset.xyz) / scale;\n"
+ 		"\tgl_Position = vec4(ndc * oPos.w, oPos.w);\n"
+ #endif
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		/* what glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE) does on desktop
+ 		GL: rows from the top, depth 0..1 */
+ 		"\tgl_Position.y = -gl_Position.y;\n"
+@@ -372,7 +374,7 @@
+ 		"\txT3 = oT3;\n"
+ 		"\txFog = oFog.x;\n"
+ 		"}\n"
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 		, XGPU_VERTEX_CONSTANT_BIAS - 38, XGPU_VERTEX_CONSTANT_BIAS - 37
+ #endif
+ 		);
+--- a/port/linux/src/port_config.c
++++ b/port/linux/src/port_config.c
+@@ -63,13 +63,30 @@
+ 	const char *comment;
+ };
+ 
++#ifdef HALO_MACOS
++#define DEFAULT_FULLSCREEN "false"
++#define DEFAULT_WINDOW_SCALE "1"
++#else
++#define DEFAULT_FULLSCREEN "true"
++#define DEFAULT_WINDOW_SCALE "2"
++#endif
++
+ static const struct config_setting config_settings[] =
+ {
+-	{ "display.fullscreen", _config_boolean, "true", "HALO_FULLSCREEN", _environment_value, _platform_desktop,
++#ifdef HALO_MACOS
++	{ "display.resolution", _config_string, "\"1280x720\"", "HALO_RESOLUTION", _environment_value, _platform_desktop,
++		"Render pixels: 1280x720 or 1920x1080 for widescreen, 640x480 for\n"
++		"the original picture, native for the display's shape. Retina window\n"
++		"density does not multiply the internal rendering resolution." },
++#endif
++	{ "display.fullscreen", _config_boolean, DEFAULT_FULLSCREEN, "HALO_FULLSCREEN", _environment_value, _platform_desktop,
+ 		"Start fullscreen, drawing at the display's resolution and shape; false\n"
+ 		"starts in a window, which draws the Xbox's 640x480. F11 switches." },
+-	{ "display.window_scale", _config_integer, "2", "HALO_WINDOW_SCALE", _environment_value, _platform_desktop,
++	{ "display.window_scale", _config_integer, DEFAULT_WINDOW_SCALE, "HALO_WINDOW_SCALE", _environment_value, _platform_desktop,
+ 		"The window's size as a multiple of 640x480 (it can be resized)." },
++	{ "display.render_width", _config_integer, "0", "HALO_RENDER_WIDTH", _environment_value, _platform_desktop,
++		"Fullscreen rendering width in pixels: 0 uses the display; positive\n"
++		"values from 640 up to the display width keep the display's shape." },
+ 	{ "display.screen_width", _config_integer, "0", "HALO_SCREEN_WIDTH", _environment_value, _platform_android,
+ 		"Columns of the 480-line picture: 0 for the display's shape, 640 for the\n"
+ 		"Xbox's 4:3." },
+@@ -88,6 +105,27 @@
+ 		"How far the view turns for the mouse's movement." },
+ 	{ "input.invert_mouse", _config_boolean, "false", "HALO_MOUSE_INVERT", _environment_set_is_true, _platform_desktop,
+ 		"Moving the mouse forward looks down." },
++
++	/* Physical key bindings: comma separated keys, Mouse1..5, Wheel; empty disables. */
++	{ "input.forward", _config_string, "\"W\"", "HALO_KEY_FORWARD", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.backward", _config_string, "\"S\"", "HALO_KEY_BACKWARD", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.left", _config_string, "\"A\"", "HALO_KEY_LEFT", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.right", _config_string, "\"D\"", "HALO_KEY_RIGHT", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.jump", _config_string, "\"Space\"", "HALO_KEY_JUMP", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.melee", _config_string, "\"F,Mouse4\"", "HALO_KEY_MELEE", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.action", _config_string, "\"E,R\"", "HALO_KEY_ACTION", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.change_weapon", _config_string, "\"Tab,Wheel\"", "HALO_KEY_CHANGE_WEAPON", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.flashlight", _config_string, "\"Q\"", "HALO_KEY_FLASHLIGHT", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.change_grenade", _config_string, "\"X\"", "HALO_KEY_CHANGE_GRENADE", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.fire", _config_string, "\"Mouse1\"", "HALO_KEY_FIRE", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++	{ "input.crouch", _config_string, "\"LeftCtrl,C\"", "HALO_KEY_CROUCH", _environment_value, _platform_desktop, "Gameplay binding; comma separated physical key names." },
++#ifdef HALO_MACOS
++ { "input.grenade", _config_string, "\"G\"", "HALO_KEY_GRENADE", _environment_value, _platform_desktop, "Throw grenade." },
++ { "input.zoom", _config_string, "\"Z,Mouse2,Mouse3\"", "HALO_KEY_ZOOM", _environment_value, _platform_desktop, "Toggle weapon zoom." },
++#else
++ { "input.grenade", _config_string, "\"G,Mouse2\"", "HALO_KEY_GRENADE", _environment_value, _platform_desktop, "Throw grenade." },
++ { "input.zoom", _config_string, "\"Z,Mouse3\"", "HALO_KEY_ZOOM", _environment_value, _platform_desktop, "Toggle weapon zoom." },
++#endif
+ 
+ 	{ "game.language", _config_string, "\"\"", "HALO_LANGUAGE", _environment_value, _platform_all,
+ 		"The language the game asks the Xbox for: \"ja\", \"de\", \"fr\", \"es\" or \"it\";\n"
+@@ -217,7 +255,7 @@
+ 
+ #define NUMBER_OF_CONFIG_SETTINGS (sizeof(config_settings) / sizeof(config_settings[0]))
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ #define CONFIG_PLATFORM _platform_android
+ #else
+ #define CONFIG_PLATFORM _platform_desktop
+@@ -239,7 +277,14 @@
+ 
+ static void config_path(char *path, size_t size)
+ {
+-#ifdef HALO_ANDROID
++#ifdef HALO_MACOS
++	/* Native AOT keeps user settings beside its isolated saves. The data
++	root may contain read-only links to the original extracted maps. */
++	const char *root = getenv("HALO_CONFIG_ROOT");
++	if (!root || !*root)
++		root = getenv("HALO_SAVE_ROOT");
++	snprintf(path, size, "%s/config.toml", root && *root ? root : ".");
++#elif defined(HALO_ANDROID)
+ 	/* the data folder, which the app names (port/android/host/host_main.c) */
+ 	const char *root = getenv("HALO_DATA_ROOT");
+ 
+@@ -367,7 +412,7 @@
+ 		if (*line)
+ 			line++;
+ 	}
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 	/* (Android apps have no environment to set) */
+ 	switch (setting->environment_style)
+ 	{
+@@ -394,7 +439,7 @@
+ 	char section[32] = "";
+ 	size_t index;
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	config_append(&text,
+ 		"# Halo settings\n"
+ 		"#\n"
+@@ -769,9 +814,9 @@
+ 	return 1;
+ }
+ 
+-/* sets a boolean setting, for now and in config.toml: its line there is
+-changed (or added), the rest of the file kept as it is */
+-int config_write_boolean(const char *name, int value)
++/* Set a typed value now and in config.toml; replace only its line and
++preserve the rest of the player's file. String callers supply checked TOML. */
++static int config_write_serialized(const char *name, const char *value, enum config_type type)
+ {
+ 	const char *dot = strchr(name, '.');
+ 	long index = config_setting_index(name);
+@@ -782,15 +827,21 @@
+ 	const char *line;
+ 	int written = 0, in_section = 0, succeeded;
+ 
+-	if (index < 0 || config_settings[index].type != _config_boolean || !dot || (size_t)(dot - name) >= sizeof(section))
++	if (index < 0 || config_settings[index].type != type || !dot || (size_t)(dot - name) >= sizeof(section))
+ 		return 0;
+ 	/* (the file read first, as the other settings are) */
+-	config_boolean(name);
++	config_value(name, type);
+ 	pthread_mutex_lock(&config_lock);
+-	config_values[index].boolean = value != 0;
++	if (type == _config_boolean) config_values[index].boolean = !strcmp(value, "true");
++	else {
++		char *copy = config_copy(value + 1, strlen(value) - 2);
++		if (!copy) { pthread_mutex_unlock(&config_lock); return 0; }
++		free(config_values[index].string);
++		config_values[index].string = copy;
++	}
+ 	snprintf(section, sizeof(section), "%.*s", (int)(dot - name), name);
+ 	snprintf(key, sizeof(key), "%s", dot + 1);
+-	snprintf(line_text, sizeof(line_text), "%s = %s\n", key, value ? "true" : "false");
++	snprintf(line_text, sizeof(line_text), "%s = %s\n", key, value);
+ 	snprintf(wanted, sizeof(wanted), "%s", section);
+ 	config_path(path, sizeof(path));
+ 	text = config_read_file(path, &size);
+@@ -847,6 +898,22 @@
+ 	return succeeded;
+ }
+ 
++int config_write_boolean(const char *name, int value)
++{
++ return config_write_serialized(name, value ? "true" : "false", _config_boolean);
++}
++
++int config_write_string(const char *name, const char *value)
++{
++ char quoted[80];
++ size_t length;
++ if (!value || (length = strlen(value)) > sizeof(quoted) - 3) return 0;
++ for (size_t i = 0; i < length; ++i)
++  if ((unsigned char)value[i] < 32 || value[i] == '"' || value[i] == '\\') return 0;
++ snprintf(quoted, sizeof(quoted), "\"%s\"", value);
++ return config_write_serialized(name, quoted, _config_string);
++}
++
+ /* ---------- public code */
+ 
+ int config_boolean(const char *name)
+--- a/port/linux/src/port_config.h
++++ b/port/linux/src/port_config.h
+@@ -21,5 +21,7 @@
+ /* sets a boolean setting, and writes it into config.toml (only its line
+ changes); 1 on success */
+ int config_write_boolean(const char *name, int value);
++/* Plain strings without control characters, quotes or backslashes; preserves other settings. */
++int config_write_string(const char *name, const char *value);
+ 
+ #endif
+--- a/port/linux/src/posix_files.c
++++ b/port/linux/src/posix_files.c
+@@ -30,6 +30,14 @@
+ 	if (!(st->st_mode & S_IWUSR))
+ 		information->flags |= _posix_file_is_read_only;
+ 	split64((unsigned long long)st->st_size, &information->size_low, &information->size_high);
++#ifdef __APPLE__
++	information->modification_seconds = (posix_ulong)st->st_mtimespec.tv_sec;
++	information->modification_nanoseconds = (posix_ulong)st->st_mtimespec.tv_nsec;
++	information->access_seconds = (posix_ulong)st->st_atimespec.tv_sec;
++	information->access_nanoseconds = (posix_ulong)st->st_atimespec.tv_nsec;
++	information->creation_seconds = (posix_ulong)st->st_ctimespec.tv_sec;
++	information->creation_nanoseconds = (posix_ulong)st->st_ctimespec.tv_nsec;
++#else
+ 	information->modification_seconds = (posix_ulong)st->st_mtim.tv_sec;
+ 	information->modification_nanoseconds = (posix_ulong)st->st_mtim.tv_nsec;
+ 	information->access_seconds = (posix_ulong)st->st_atim.tv_sec;
+@@ -37,6 +45,7 @@
+ 	/* Linux has no portable creation time; the change time is the closest */
+ 	information->creation_seconds = (posix_ulong)st->st_ctim.tv_sec;
+ 	information->creation_nanoseconds = (posix_ulong)st->st_ctim.tv_nsec;
++#endif
+ }
+ 
+ int posix_stat(const char *path, struct posix_file_information *information)
+--- a/port/linux/src/posix_net.c
++++ b/port/linux/src/posix_net.c
+@@ -18,7 +18,9 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/ioctl.h>
++#ifndef __APPLE__
+ #include <sys/random.h>
++#endif
+ #include <sys/select.h>
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+@@ -27,6 +29,16 @@
+ #include <unistd.h>
+ 
+ #include "posix.h"
++
++#ifdef __APPLE__
++/* Darwin sockets are close-on-exec only after fcntl; SOCK_CLOEXEC is absent. */
++#ifndef SOCK_CLOEXEC
++#define SOCK_CLOEXEC 0
++#endif
++#ifndef MSG_NOSIGNAL
++#define MSG_NOSIGNAL 0
++#endif
++#endif
+ 
+ /* Winsock error codes (winsockx.h) */
+ #define WSAEINTR 10004
+@@ -124,7 +136,16 @@
+ 
+ int posix_socket(int family, int type, int protocol)
+ {
+-	return succeed(socket(family, type | SOCK_CLOEXEC, protocol));
++	int descriptor = socket(family, type | SOCK_CLOEXEC, protocol);
++#ifdef __APPLE__
++	if (descriptor >= 0)
++	{
++		int enabled = 1;
++		(void)fcntl(descriptor, F_SETFD, FD_CLOEXEC);
++		(void)setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
++	}
++#endif
++	return succeed(descriptor);
+ }
+ 
+ int posix_socket_close(int socket)
+@@ -163,7 +184,18 @@
+ int posix_socket_accept(int socket, void *address, int *address_length)
+ {
+ 	socklen_t length = address_length ? (socklen_t)*address_length : 0;
+-	int result = accept4(socket, address, address_length ? &length : NULL, SOCK_CLOEXEC);
++	int result;
++#ifdef __APPLE__
++	result = accept(socket, address, address_length ? &length : NULL);
++	if (result >= 0)
++	{
++		int enabled = 1;
++		(void)fcntl(result, F_SETFD, FD_CLOEXEC);
++		(void)setsockopt(result, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
++	}
++#else
++	result = accept4(socket, address, address_length ? &length : NULL, SOCK_CLOEXEC);
++#endif
+ 
+ 	if (address_length)
+ 		*address_length = (int)length;
+@@ -412,6 +444,9 @@
+ 
+ void posix_random_bytes(void *buffer, posix_ulong size)
+ {
++#ifdef __APPLE__
++	arc4random_buf(buffer, size);
++#else
+ 	unsigned char *cursor = buffer;
+ 
+ 	while (size)
+@@ -427,6 +462,7 @@
+ 		cursor += count;
+ 		size -= (posix_ulong)count;
+ 	}
++#endif
+ }
+ 
+ posix_ulong posix_resolve_ipv4(const char *host)
+@@ -449,7 +485,7 @@
+ 
+ int posix_command_line_argument(int index, char *buffer, posix_ulong size)
+ {
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(HALO_MACOS)
+ 	(void)index;
+ 	(void)buffer;
+ 	(void)size;
+@@ -484,7 +520,7 @@
+ 	return (posix_ulong)getpid();
+ }
+ 
+-#ifndef __ANDROID__
++#if !defined(__ANDROID__) && !defined(HALO_MACOS)
+ /* runs a program with its arguments and waits for it; its exit status, or -1 */
+ static int run_program(char *const arguments[])
+ {
+@@ -502,7 +538,7 @@
+ 
+ int posix_register_url_scheme(const char *scheme, const char *description)
+ {
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(HALO_MACOS)
+ 	(void)scheme;
+ 	(void)description;
+ 	return 0;
+@@ -566,7 +602,7 @@
+ 
+ int posix_discord_connect(void)
+ {
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(HALO_MACOS)
+ 	return -1;
+ #else
+ 	/* where Discord (and its Flatpak and Snap packages) put discord-ipc-N */
+--- a/port/linux/src/sdl_platform.c
++++ b/port/linux/src/sdl_platform.c
+@@ -11,6 +11,10 @@
+ 
+ #include "platform.h"
+ #include "sdl_platform.h"
++extern void halo_input_focus_lost(void);
++#ifdef HALO_MACOS
++extern void halo_input_gamepads_changed(void);
++#endif
+ #include "gl.h"
+ #include "port_config.h"
+ #include "p2p.h"
+@@ -30,7 +34,7 @@
+ /* keys pressed since the last read, so a press and release between two
+ reads still counts as a press (input injected on Android, or a slow frame) */
+ static unsigned char keys_pressed[SDL_SCANCODE_COUNT];
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ /* the menus' pointer (platform_ui_pointer_set_active), under input_lock */
+ static struct platform_ui_pointer ui_pointer;
+ static float ui_pointer_wheel;
+@@ -57,7 +61,7 @@
+ 	if (p2p_hand_off_invite())
+ 		exit(EXIT_SUCCESS);
+ 	SDL_SetHint(SDL_HINT_APP_NAME, "Halo");
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	/* landscape only; the back key arrives as a key event (xinput_sdl.c)
+ 	instead of closing the activity */
+ 	SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+@@ -298,14 +302,16 @@
+ 	return enabled;
+ }
+ 
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ /* whether the window opens fullscreen (display.fullscreen), never when it
+ is hidden */
+ static BOOL platform_fullscreen_setting(void)
+ {
+ 	return !config_boolean("debug.hidden_window") && config_boolean("display.fullscreen");
+ }
+-
++#endif
++
++#ifndef HALO_ANDROID
+ /* whether the game is, or is to be, fullscreen, and if so the size in
+ pixels of the display it fills (d3d8_gl.c draws at that resolution) */
+ BOOL platform_screen_mode(long *width, long *height)
+@@ -326,7 +332,37 @@
+ 	*height = (long)(mode->h * mode->pixel_density + 0.5f);
+ 	return TRUE;
+ }
+-
++#endif
++#ifdef HALO_MACOS
++BOOL platform_render_resolution(long *width, long *height)
++{
++	const char *resolution = config_string("display.resolution");
++	if (!strcmp(resolution, "native")) return FALSE;
++	if (!strcmp(resolution, "1920x1080")) { *width = 1920; *height = 1080; }
++	else if (!strcmp(resolution, "640x480")) { *width = 640; *height = 480; }
++	else { *width = 1280; *height = 720; }
++	return TRUE;
++}
++
++static void platform_cycle_render_resolution(void)
++{
++ const char *current = config_string("display.resolution");
++ const char *next = !strcmp(current, "640x480") ? "1280x720" :
++  !strcmp(current, "1280x720") ? "1920x1080" : "640x480";
++ int points_w = 0, points_h = 0, pixels_w = 0, pixels_h = 0;
++ long width = !strcmp(next, "640x480") ? 640 : !strcmp(next, "1280x720") ? 1280 : 1920;
++ long height = !strcmp(next, "640x480") ? 480 : !strcmp(next, "1280x720") ? 720 : 1080;
++ SDL_GetWindowSize(platform_window, &points_w, &points_h);
++ SDL_GetWindowSizeInPixels(platform_window, &pixels_w, &pixels_h);
++ double density = points_w > 0 && pixels_w > 0 ? (double)pixels_w / points_w : 1.0;
++ if (density < 1.0) density = 1.0;
++ if (!SDL_SetWindowSize(platform_window, (int)(width / density + 0.5), (int)(height / density + 0.5)))
++  platform_log("display mode: cannot resize window: %s", SDL_GetError());
++ if (!config_write_string("display.resolution", next))
++  platform_log("display mode: cannot persist %s", next);
++ /* halo_screen_commit reuses the normal back/depth-buffer resize path next frame. */
++ platform_log("display mode: %s (F10)", next);
++}
+ #endif
+ BOOL platform_video_initialize(unsigned long width, unsigned long height)
+ {
+@@ -339,11 +375,26 @@
+ 		return FALSE;
+ 	if (scale < 1)
+ 		scale = 1;
+-
+-#ifdef HALO_ANDROID
++#ifdef HALO_MACOS
++	{
++		long render_width, render_height;
++		if (platform_render_resolution(&render_width, &render_height))
++		{
++			width = (unsigned long)render_width;
++			height = (unsigned long)render_height;
++			scale = 1;
++		}
++	}
++#endif
++
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
++#elif defined(HALO_MACOS)
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+ #else
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+ 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+@@ -352,8 +403,14 @@
+ 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+ 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+ 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
++#ifdef HALO_MACOS
++	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS,
++		SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG |
++		(config_boolean("debug.gl_debug") ? SDL_GL_CONTEXT_DEBUG_FLAG : 0));
++#else
+ 	if (config_boolean("debug.gl_debug"))
+ 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
++#endif
+ #if !defined(HALO_ANDROID) && !defined(_WIN32)
+ 	/* Mesa's GL thread: the renderer makes thousands of GL calls a frame
+ 	and never waits for their results, so handing them to a thread of
+@@ -362,7 +419,7 @@
+ 	setenv("mesa_glthread", "true", 0);
+ #endif
+ 
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	platform_window = SDL_CreateWindow("Halo", (int)(width * scale), (int)(height * scale),
+ 		SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+ #else
+@@ -381,7 +438,7 @@
+ 		return FALSE;
+ 	}
+ 	platform_gl_context = SDL_GL_CreateContext(platform_window);
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 	/* ES 3.2 where the driver has it, otherwise the renderer makes do with
+ 	3.0 plus extensions */
+ 	if (!platform_gl_context)
+@@ -402,7 +459,7 @@
+ 	(void)version;
+ 	platform_event_thread = SDL_GetCurrentThreadID();
+ 	platform_log("OpenGL %s on %s", (const char *)glGetString(GL_VERSION), (const char *)glGetString(GL_RENDERER));
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 	platform_mouse_capture(TRUE);
+ #endif
+ 	return TRUE;
+@@ -589,7 +646,7 @@
+ 		SDL_SetClipboardText(invite);
+ 		snprintf(seen, sizeof(seen), "%s", invite);
+ 		platform_log("Internet play: the invite link is on the clipboard");
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 		SDL_ShowAndroidToast("Hosting: the invite link is on the clipboard", 1, -1, 0, 0);
+ #endif
+ 	}
+@@ -602,7 +659,7 @@
+ 			snprintf(seen, sizeof(seen), "%s", text);
+ 			if (p2p_join_invite(text))
+ 			{
+-#ifdef HALO_ANDROID
++#if defined(HALO_ANDROID) && !defined(HALO_MACOS)
+ 				SDL_ShowAndroidToast("Joining the invite on the clipboard", 1, -1, 0, 0);
+ #endif
+ 			}
+@@ -683,6 +740,13 @@
+ 		double seconds = config_real("debug.exit_after");
+ 
+ 		exit_ticks = seconds > 0.0 ? SDL_GetTicks() + (Uint64)(seconds * 1000.0) : 0;
++		if (getenv("HALO_TRACE_SCREEN_MODE"))
++		{
++			union { double value; uint64_t bits; } raw_seconds = { .value = seconds };
++			fprintf(stderr, "[exit-after-trace] seconds=%.17g bits=0x%016llx now=%llu deadline=%llu\n",
++				raw_seconds.value, (unsigned long long)raw_seconds.bits,
++				(unsigned long long)SDL_GetTicks(), (unsigned long long)exit_ticks);
++		}
+ 	}
+ 	if (exit_ticks && SDL_GetTicks() >= exit_ticks)
+ 	{
+@@ -704,7 +768,39 @@
+ 			exit(EXIT_SUCCESS);
+ 		case SDL_EVENT_KEY_DOWN:
+ 		case SDL_EVENT_KEY_UP:
+-			if (event.key.scancode < SDL_SCANCODE_COUNT)
++#ifdef HALO_MACOS
++			if (event.key.down && event.key.scancode == SDL_SCANCODE_Q && (event.key.mod & SDL_KMOD_GUI)) {
++				pthread_mutex_unlock(&input_lock); platform_log("Command-Q"); exit(EXIT_SUCCESS);
++			}
++			/* Leave Command-Tab and macOS screenshot chords to the system.
++			   Screenshot overlays need a free pointer even if focus stays here. */
++			if (event.key.mod & SDL_KMOD_GUI)
++			{
++				input_state.mouse_released = TRUE;
++				platform_mouse_capture(FALSE);
++				memset(input_state.keys, 0, sizeof(input_state.keys));
++				memset(input_state.mouse_buttons, 0, sizeof(input_state.mouse_buttons));
++				memset(keys_pressed, 0, sizeof(keys_pressed));
++				keystroke_head = keystroke_count = 0;
++				input_state.mouse_dx = input_state.mouse_dy = input_state.mouse_wheel = 0;
++				halo_input_focus_lost();
++				break;
++			}
++			/* Consume both edges/repeats so F10 never enters gameplay or text input. */
++			if (event.key.scancode == SDL_SCANCODE_F10)
++			{
++				if (event.key.down && !event.key.repeat &&
++					!(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_GUI)))
++					platform_cycle_render_resolution();
++				break;
++			}
++			if (event.key.down && event.key.scancode == SDL_SCANCODE_ESCAPE)
++			{
++				input_state.mouse_released = TRUE;
++				platform_mouse_capture(FALSE);
++			}
++#endif
++			if (event.key.scancode >= 0 && event.key.scancode < SDL_SCANCODE_COUNT)
+ 			{
+ 				input_state.keys[event.key.scancode] = event.key.down;
+ 				if (event.key.down)
+@@ -717,7 +813,7 @@
+ 				input_state.mouse_released = !input_state.mouse_released;
+ 				platform_mouse_capture(!input_state.mouse_released && !input_state.ui_pointer);
+ 			}
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 			/* F11 switches between fullscreen and the window (SDL keeps the
+ 			window's size and place while fullscreen) */
+ 			if (event.key.down && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F11)
+@@ -728,7 +824,7 @@
+ #endif
+ 			break;
+ 		case SDL_EVENT_MOUSE_MOTION:
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 			/* in the menus the mouse moves the pointer, not the view */
+ 			if (input_state.ui_pointer)
+ 			{
+@@ -743,7 +839,17 @@
+ 			break;
+ 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+ 		case SDL_EVENT_MOUSE_BUTTON_UP:
+-#ifndef HALO_ANDROID
++#ifdef HALO_MACOS
++			if (input_state.focused && input_state.mouse_released && !input_state.ui_pointer &&
++				event.button.down && event.button.button == SDL_BUTTON_LEFT)
++			{
++				input_state.mouse_released = FALSE;
++				input_state.mouse_dx = input_state.mouse_dy = 0;
++				platform_mouse_capture(TRUE);
++				break; /* the recapture click must not fire the weapon */
++			}
++#endif
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 			/* clicks in the menus go to the pointer; a button held down
+ 			when the menu closes stays up until pressed again, so the click
+ 			that resumes the game does not also fire */
+@@ -766,7 +872,7 @@
+ 				input_state.mouse_buttons[event.button.button] = event.button.down;
+ 			break;
+ 		case SDL_EVENT_MOUSE_WHEEL:
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 			if (input_state.ui_pointer)
+ 			{
+ 				/* whole notches: smooth-scrolling wheels send fractions */
+@@ -790,18 +896,35 @@
+ 			memset(input_state.keys, 0, sizeof(input_state.keys));
+ 			memset(input_state.mouse_buttons, 0, sizeof(input_state.mouse_buttons));
+ 			input_state.focused = FALSE;
++   memset(keys_pressed, 0, sizeof(keys_pressed));
++   keystroke_head = keystroke_count = 0;
++   input_state.mouse_dx = input_state.mouse_dy = input_state.mouse_wheel = 0;
++   halo_input_focus_lost();
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
++   platform_mouse_capture(FALSE);
++   ui_pointer.left_clicks = ui_pointer.right_clicks = ui_pointer.wheel_steps = 0;
++   ui_pointer_wheel = 0.0f;
++#endif
+ 			break;
+ 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+ 			input_state.focused = TRUE;
+ 			look_at_clipboard = TRUE;
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ 			if (!input_state.mouse_released && !input_state.ui_pointer)
+ 				platform_mouse_capture(TRUE);
+ #endif
+ 			break;
+ 		case SDL_EVENT_GAMEPAD_ADDED:
+ 			SDL_OpenGamepad(event.gdevice.which);
++#ifdef HALO_MACOS
++			halo_input_gamepads_changed();
++#endif
+ 			break;
++#ifdef HALO_MACOS
++		case SDL_EVENT_GAMEPAD_REMOVED:
++			halo_input_gamepads_changed();
++			break;
++#endif
+ 		default:
+ 			break;
+ 		}
+@@ -811,7 +934,7 @@
+ 	platform_invite_clipboard(look_at_clipboard);
+ }
+ 
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ /* ---------- the menus' pointer */
+ 
+ /* While a menu is up the mouse is released, its pointer shows (centered when
+--- a/port/linux/src/sdl_platform.h
++++ b/port/linux/src/sdl_platform.h
+@@ -35,6 +35,9 @@
+ BOOL platform_sdl_initialize(void);
+ /* creates the window and makes its OpenGL context current on this thread */
+ BOOL platform_video_initialize(unsigned long width, unsigned long height);
++#ifdef HALO_MACOS
++BOOL platform_render_resolution(long *width, long *height);
++#endif
+ #ifndef HALO_ANDROID
+ BOOL platform_screen_mode(long *width, long *height);
+ #endif
+@@ -49,7 +52,7 @@
+ void platform_pump_events(void);
+ /* a snapshot of the input state; consume_motion resets the mouse deltas */
+ void platform_input_read(struct platform_input_state *state, BOOL consume_motion);
+-#ifndef HALO_ANDROID
++#if !defined(HALO_ANDROID) || defined(HALO_MACOS)
+ /* the pointer in the menus (d3d8_gl.c, halo_ui_pointer_update) */
+ struct platform_ui_pointer
+ {
+--- a/port/linux/src/xgpu.h
++++ b/port/linux/src/xgpu.h
+@@ -13,15 +13,16 @@
+ #include "platform.h"
+ #include "gl.h"
+ 
+-#ifdef HALO_ANDROID
+-/* OpenGL ES features that are optional (d3d8_gl.c gl_initialize) */
++#if defined(HALO_ANDROID) || defined(HALO_MACOS)
++/* GL features that are optional on the Android and native macOS renderers
++ * (d3d8_gl.c gl_initialize). */
+ struct xgpu_capabilities
+ {
+ 	BOOL copy_image;
+ 	BOOL border_clamp;
+ 	BOOL anisotropy;
+ 	BOOL s3tc;
+-	/* ES 3.2: glDrawElementsBaseVertex */
++	/* GL ES 3.2 / desktop GL 3.2: glDrawElementsBaseVertex */
+ 	BOOL base_vertex;
+ 	/* ES 3.1 with fragment atomic counters: exact visibility test counts */
+ 	BOOL atomic_counters;
+--- a/port/linux/src/xinput_sdl.c
++++ b/port/linux/src/xinput_sdl.c
+@@ -35,9 +35,11 @@
+ #include "platform.h"
+ #include "sdl_platform.h"
+ #include "port_config.h"
++#include "input_bindings.h"
+ 
+ #include <SDL3/SDL.h>
+ #include <math.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -86,7 +88,7 @@
+ 	if (sensitivity < 0.0f)
+ 	{
+ 		sensitivity = (float)config_real("input.mouse_sensitivity");
+-		if (sensitivity <= 0.0f)
++		if (!isfinite(sensitivity) || sensitivity <= 0.0f)
+ 			sensitivity = 1.0f;
+ 	}
+ 	return sensitivity;
+@@ -132,7 +134,7 @@
+ 		mouse_pending_x = 0.0f;
+ 		mouse_pending_y = 0.0f;
+ 	}
+-	if (!input->mouse_released)
++	if (input->focused && !input->mouse_released)
+ 	{
+ 		mouse_pending_x += input->mouse_dx;
+ 		mouse_pending_y += input->mouse_dy;
+@@ -150,17 +152,92 @@
+ 	return down ? 0xff : 0x00;
+ }
+ 
++enum { B_FORWARD, B_BACKWARD, B_LEFT, B_RIGHT, B_JUMP, B_MELEE, B_ACTION,
++ B_WEAPON, B_FLASHLIGHT, B_GRENADE_TYPE, B_GRENADE, B_FIRE, B_CROUCH, B_ZOOM, B_COUNT };
++static struct input_binding bindings[B_COUNT];
++static void load_bindings(void)
++{
++ static int loaded;
++ static const char *names[B_COUNT] = {"forward","backward","left","right","jump","melee","action",
++  "change_weapon","flashlight","change_grenade","grenade","fire","crouch","zoom"};
++ static const char *defaults[B_COUNT] = {"W","S","A","D","Space","F,Mouse4","E,R",
++  "Tab,Wheel","Q","X",
++#ifdef HALO_MACOS
++  "G","Mouse1","LeftCtrl,C","Z,Mouse2,Mouse3"
++#else
++  "G,Mouse2","Mouse1","LeftCtrl,C","Z,Mouse3"
++#endif
++ };
++ int i;
++ if(loaded) return;
++ for(i=0;i<B_COUNT;i++) {
++  char name[64]; const char *value;
++  snprintf(name,sizeof(name),"input.%s",names[i]); value=config_string(name);
++  if(!input_binding_parse(value,&bindings[i])) {
++   platform_log("invalid binding %s; using %s",name,defaults[i]);
++   input_binding_parse(defaults[i],&bindings[i]);
++  }
++ }
++ loaded=1;
++}
++static int physical_gamepad_present;
++static SDL_GamepadType physical_gamepad_type;
++#ifdef HALO_MACOS
++/* HUD enum values are original Xbox icon IDs. Labels follow the configured
++ * keyboard binding and leave controller artwork intact for a physical pad. */
++const wchar_t *halo_macos_control_prompt(short icon)
++{
++ static wchar_t labels[18][40];
++ static const char *names[18] = {"jump","melee","action","change_weapon","change_grenade","flashlight",
++  "grenade","fire",NULL,NULL,NULL,NULL,NULL,NULL,"crouch","zoom",NULL,NULL};
++ static const char *fixed[18] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,"Up","Down","Left","Right","Esc","F1",NULL,NULL,"WASD","Mouse"};
++ const char *text; char name[64], movement[40]; unsigned int i;
++ static const char *fallback[18] = {"Space","F","E","Tab","X","Q","G","Mouse1",NULL,NULL,NULL,NULL,NULL,NULL,"LeftCtrl","Z",NULL,NULL};
++ struct input_binding check;
++ if(icon<0 || icon>=18) return NULL;
++ if(physical_gamepad_present) {
++  static const wchar_t *sony[18]={L"Cross",L"Circle",L"Square",L"Triangle",L"R1",L"L1",L"L2",L"R2",
++   L"D-pad Up",L"D-pad Down",L"D-pad Left",L"D-pad Right",L"Options",L"Share",L"L3",L"R3",L"Left Stick",L"Right Stick"};
++  if(physical_gamepad_type==SDL_GAMEPAD_TYPE_PS3 || physical_gamepad_type==SDL_GAMEPAD_TYPE_PS4 || physical_gamepad_type==SDL_GAMEPAD_TYPE_PS5) return sony[icon];
++  return NULL;
++ }
++ if(names[icon]) { snprintf(name,sizeof(name),"input.%s",names[icon]); text=config_string(name); }
++ else text=fixed[icon];
++ if(names[icon] && !input_binding_parse(text,&check)) text=fallback[icon];
++ if(icon==16) {
++  const char *f=config_string("input.forward"), *b=config_string("input.backward");
++  const char *l=config_string("input.left"), *r=config_string("input.right");
++  if(strcmp(f,"W") || strcmp(b,"S") || strcmp(l,"A") || strcmp(r,"D")) {
++   snprintf(movement,sizeof(movement),"%s/%s/%s/%s",f,b,l,r); text=movement;
++  }
++ }
++ if(!text || !*text) text="Unbound";
++ for(i=0;i<39 && text[i] && text[i]!=',';i++) labels[icon][i]=(wchar_t)(unsigned char)text[i];
++ labels[icon][i]=0;
++ return labels[icon];
++}
++#endif
++void halo_input_focus_lost(void)
++{
++ pthread_mutex_lock(&mouse_lock);
++ mouse_pending_x=mouse_pending_y=mouse_wheel_accumulated=0.0f;
++ mouse_polls_unconsumed=0; wheel_moved_ms=wheel_press_until_ms=0; wheel_scrolling=FALSE;
++ pthread_mutex_unlock(&mouse_lock);
++}
++
+ static void keyboard_gamepad(const struct platform_input_state *input, XINPUT_GAMEPAD *pad)
+ {
+ 	const unsigned char *k = input->keys;
+ 	BOOL mouse = !input->mouse_released;
+ 	const unsigned char *m = input->mouse_buttons;
+ 	int x = 0, y = 0;
+-
+-	if (k[SDL_SCANCODE_D]) x++;
+-	if (k[SDL_SCANCODE_A]) x--;
+-	if (k[SDL_SCANCODE_W]) y++;
+-	if (k[SDL_SCANCODE_S]) y--;
++	load_bindings();
++#define DOWN(b) input_binding_down(&bindings[b], k, m, mouse)
++
++	if (DOWN(B_RIGHT)) x++;
++	if (DOWN(B_LEFT)) x--;
++	if (DOWN(B_FORWARD)) y++;
++	if (DOWN(B_BACKWARD)) y--;
+ 	if (x || y)
+ 	{
+ 		/* full deflection, diagonals on the unit circle */
+@@ -176,23 +253,23 @@
+ 	if (k[SDL_SCANCODE_RIGHT]) pad->wButtons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+ 	if (k[SDL_SCANCODE_ESCAPE]) pad->wButtons |= XINPUT_GAMEPAD_START;
+ 	if (k[SDL_SCANCODE_F1]) pad->wButtons |= XINPUT_GAMEPAD_BACK;
+-	if (k[SDL_SCANCODE_LCTRL] || k[SDL_SCANCODE_C]) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
+-	if (k[SDL_SCANCODE_Z] || (mouse && m[SDL_BUTTON_MIDDLE])) pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+-
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(k[SDL_SCANCODE_SPACE] || k[SDL_SCANCODE_RETURN] ||
++	if (DOWN(B_CROUCH)) pad->wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
++	if (DOWN(B_ZOOM)) pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
++
++	pad->bAnalogButtons[XINPUT_GAMEPAD_A] |= analog(DOWN(B_JUMP) || k[SDL_SCANCODE_RETURN] ||
+ 		k[SDL_SCANCODE_KP_ENTER]);
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_F] || k[SDL_SCANCODE_BACKSPACE] ||
+-		(mouse && m[SDL_BUTTON_X1]));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(DOWN(B_MELEE) || k[SDL_SCANCODE_BACKSPACE]);
+ #ifdef HALO_ANDROID
+ 	/* the system back key (gesture or button) backs out of menus */
+ 	pad->bAnalogButtons[XINPUT_GAMEPAD_B] |= analog(k[SDL_SCANCODE_AC_BACK]);
+ #endif
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(k[SDL_SCANCODE_E] || k[SDL_SCANCODE_R]);
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(k[SDL_SCANCODE_TAB] || SDL_GetTicks() < wheel_press_until_ms);
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(k[SDL_SCANCODE_Q]);
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(k[SDL_SCANCODE_X]);
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(k[SDL_SCANCODE_G] || (mouse && m[SDL_BUTTON_RIGHT]));
+-	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(mouse && m[SDL_BUTTON_LEFT]);
++	pad->bAnalogButtons[XINPUT_GAMEPAD_X] |= analog(DOWN(B_ACTION));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_Y] |= analog(DOWN(B_WEAPON) || (bindings[B_WEAPON].wheel && SDL_GetTicks() < wheel_press_until_ms));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] |= analog(DOWN(B_FLASHLIGHT));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_BLACK] |= analog(DOWN(B_GRENADE_TYPE));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] |= analog(DOWN(B_GRENADE));
++	pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] |= analog(DOWN(B_FIRE));
++#undef DOWN
+ }
+ 
+ /* A scroll of the wheel switches weapons once: it holds Y for WHEEL_PRESS_MS
+@@ -226,6 +303,7 @@
+ {
+ 	static int checked;
+ 	static int seed = -1;
++	static int movement_only;
+ 	double t;
+ 
+ 	if (!checked)
+@@ -233,14 +311,21 @@
+ 		const char *setting = config_string("debug.test_input");
+ 
+ 		checked = 1;
+-		if (!strncmp(setting, "bot:", 4))
++		if (!strncmp(setting, "move:", 5))
++		{
++			seed = atoi(setting + 5);
++			movement_only = 1;
++		}
++		else if (!strncmp(setting, "bot:", 4))
+ 			seed = atoi(setting + 4);
+ 		else if (!strcmp(setting, "bot"))
+ 			seed = 0;
+ 	}
+ 	if (seed < 0)
+ 		return;
+-	if (test_input_holding_action)
++	if (movement_only)
++		memset(pad, 0, sizeof(*pad));
++	if (test_input_holding_action && !movement_only)
+ 	{
+ 		/* (standing still, the button held from a second on) */
+ 		if (SDL_GetTicks() - test_input_holding_action_since >= 1000)
+@@ -251,6 +336,8 @@
+ 	pad->sThumbLY = (SHORT)(sin(t * 0.9) * 32000.0);
+ 	pad->sThumbLX = (SHORT)(cos(t * 0.6 + seed) * 20000.0);
+ 	pad->sThumbRX = (SHORT)(sin(t * 0.4) * 14000.0);
++	if (movement_only)
++		return;
+ 	if (fmod(t, 3.0) < 0.3)
+ 		pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = 255;
+ 	if (fmod(t, 5.0) < 0.1)
+@@ -283,18 +370,70 @@
+ /* ---------- SDL gamepads */
+ 
+ /* the SDL gamepads in connection order, at most one per port */
++#ifdef HALO_MACOS
++/* Four fixed player slots. Enumerate/allocate an SDL list only initially or
++ * after hot-plug. A token lookup also recovers a missed removal notification. */
++static pthread_mutex_t gamepad_cache_lock = PTHREAD_MUTEX_INITIALIZER;
++static SDL_JoystickID assigned_gamepads[PORT_COUNT];
++static SDL_Gamepad *cached_gamepads[PORT_COUNT];
++static int cached_gamepad_count;
++static BOOL gamepad_cache_dirty = TRUE;
++void halo_input_gamepads_changed(void)
++{
++ pthread_mutex_lock(&gamepad_cache_lock);
++ gamepad_cache_dirty = TRUE;
++ pthread_mutex_unlock(&gamepad_cache_lock);
++}
++#endif
++
+ static int sdl_gamepads(SDL_Gamepad *gamepads[PORT_COUNT])
+ {
+ 	SDL_JoystickID *ids;
+ 	int count = 0, index, found = 0;
+ 
++#ifdef HALO_MACOS
++ pthread_mutex_lock(&gamepad_cache_lock);
++ for(index=0;index<PORT_COUNT;index++)
++  if(assigned_gamepads[index] && SDL_GetGamepadFromID(assigned_gamepads[index]) != cached_gamepads[index])
++   gamepad_cache_dirty=TRUE;
++ if(!gamepad_cache_dirty) {
++  memcpy(gamepads,cached_gamepads,sizeof(cached_gamepads));
++  found=cached_gamepad_count;
++  pthread_mutex_unlock(&gamepad_cache_lock);
++  return found;
++ }
++#endif
+ 	memset(gamepads, 0, sizeof(SDL_Gamepad *) * PORT_COUNT);
+ 	ids = SDL_GetGamepads(&count);
+-	if (!ids)
+-		return 0;
+-#ifdef HALO_ANDROID
+-	{
+-		/* Android can list input devices with a few gamepad buttons (the
++	if (!ids) {
++#ifdef HALO_MACOS
++  pthread_mutex_unlock(&gamepad_cache_lock);
++#endif
++  return 0;
++ }
++#ifdef HALO_MACOS
++ {
++  int port;
++  /* Preserve occupied slots when another controller disconnects. */
++  for(port=0;port<PORT_COUNT;port++) {
++   BOOL present=FALSE;
++   for(index=0;index<count;index++) if(ids[index]==assigned_gamepads[port]) present=TRUE;
++   if(!present) assigned_gamepads[port]=0;
++  }
++  for(index=0;index<count;index++) {
++   BOOL present=FALSE;
++   for(port=0;port<PORT_COUNT;port++) if(assigned_gamepads[port]==ids[index]) present=TRUE;
++   if(!present) for(port=0;port<PORT_COUNT;port++) if(!assigned_gamepads[port]) { assigned_gamepads[port]=ids[index];break; }
++  }
++  for(port=0;port<PORT_COUNT;port++) if(assigned_gamepads[port]) {
++   gamepads[port]=SDL_GetGamepadFromID(assigned_gamepads[port]);
++   if(!gamepads[port]) gamepads[port]=SDL_OpenGamepad(assigned_gamepads[port]);
++   if(gamepads[port]) found=port+1;
++  }
++ }
++#elif defined(HALO_ANDROID)
++ {
++  /* Android can list input devices with a few gamepad buttons (the
+ 		emulator's keyboard, some phones' key devices) as generic gamepads:
+ 		recognised controllers take the first ports */
+ 		int pass;
+@@ -326,12 +465,17 @@
+ 	}
+ #endif
+ 	SDL_free(ids);
++#ifdef HALO_MACOS
++ memcpy(cached_gamepads,gamepads,sizeof(cached_gamepads));
++ cached_gamepad_count=found;gamepad_cache_dirty=FALSE;
++ pthread_mutex_unlock(&gamepad_cache_lock);
++#endif
+ 	return found;
+ }
+ 
+ static SHORT stick(Sint16 value, BOOL flip)
+ {
+-	int result = flip ? -(int)value - 1 : value;
++	int result = flip ? -(int)value : value;
+ 
+ 	if (result < -32768) result = -32768;
+ 	if (result > 32767) result = 32767;
+@@ -380,6 +524,8 @@
+ 
+ 	left_trigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) * 255 / 32767;
+ 	right_trigger = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) * 255 / 32767;
++	left_trigger = left_trigger < 0 ? 0 : left_trigger > 255 ? 255 : left_trigger;
++	right_trigger = right_trigger < 0 ? 0 : right_trigger > 255 ? 255 : right_trigger;
+ 	if (left_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER])
+ 		pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = (BYTE)left_trigger;
+ 	if (right_trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER])
+@@ -414,7 +560,7 @@
+ 
+ 	/* the first pad shares port 0 with the keyboard */
+ 	for (port = 1; port < count; port++)
+-		mask |= 1UL << port;
++		if (gamepads[port]) mask |= 1UL << port;
+ 	return mask;
+ }
+ 
+@@ -496,19 +642,22 @@
+ 	{
+ 		struct platform_input_state input;
+ 
++		physical_gamepad_present = gamepads[0] != NULL;
++		physical_gamepad_type = physical_gamepad_present ? SDL_GetGamepadType(gamepads[0]) : SDL_GAMEPAD_TYPE_UNKNOWN;
+ 		platform_input_read(&input, TRUE);
+ 		mouse_poll(&input);
+ 		wheel_update();
+-		if (!console_is_active())
++		if (input.focused && !console_is_active())
+ 			keyboard_gamepad(&input, &state->Gamepad);
+-		if (count > 0)
++		if (gamepads[0])
+ 			sdl_gamepad_state(gamepads[0], &state->Gamepad);
+ 		test_input_gamepad(&state->Gamepad);
+ 	}
+-	else if (port < count)
++	else if (port < count && gamepads[port])
+ 	{
+ 		sdl_gamepad_state(gamepads[port], &state->Gamepad);
+ 	}
++ else return ERROR_DEVICE_NOT_CONNECTED;
+ 
+ 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
+ 	{
+@@ -521,24 +670,18 @@
+ 
+ DWORD WINAPI XInputSetState(HANDLE device, PXINPUT_FEEDBACK feedback)
+ {
+-	int port = controller_port(device);
+-	SDL_Gamepad *gamepads[PORT_COUNT];
+-	int count;
+-
+-	if (!feedback)
+-		return ERROR_INVALID_PARAMETER;
+-	feedback->Header.dwStatus = ERROR_SUCCESS;
+-	if (port < 0)
+-		return ERROR_DEVICE_NOT_CONNECTED;
+-	count = sdl_gamepads(gamepads);
+-	if (port < count)
+-	{
+-		/* the game refreshes the motors every frame; rumble a little longer
+-		than that so they do not stutter */
+-		SDL_RumbleGamepad(gamepads[port], feedback->Rumble.wLeftMotorSpeed,
+-			feedback->Rumble.wRightMotorSpeed, 100);
+-	}
+-	return ERROR_SUCCESS;
++ int port=controller_port(device); SDL_Gamepad *gamepads[PORT_COUNT]; int count;
++ DWORD status=ERROR_DEVICE_NOT_CONNECTED;
++ if(!feedback) return ERROR_INVALID_PARAMETER;
++ if(port>=0) {
++  count=sdl_gamepads(gamepads);
++  if(port<count && gamepads[port])
++   status=SDL_RumbleGamepad(gamepads[port],feedback->Rumble.wLeftMotorSpeed,feedback->Rumble.wRightMotorSpeed,100)?ERROR_SUCCESS:50; /* ERROR_NOT_SUPPORTED */
++  else if(port==0) status=50; /* Keyboard/mouse has no motors. */
++ }
++ feedback->Header.dwStatus=status;
++ if(feedback->Header.hEvent) SetEvent(feedback->Header.hEvent);
++ return status;
+ }
+ 
+ DWORD WINAPI XInputDebugInitKeyboardQueue(PXINPUT_DEBUG_KEYQUEUE_PARAMETERS parameters)
+--- a/source/cache/cache_files.h
++++ b/source/cache/cache_files.h
+@@ -33,6 +33,7 @@
+ struct cache_file_header;
+ struct cache_file_tag_header;
+ struct cache_file_structure_bsp_header;
++struct scenario_structure_bsp_reference;
+ 
+ struct tag_iterator
+ {
+--- a/source/cseries/errors.c
++++ b/source/cseries/errors.c
+@@ -64,6 +64,7 @@
+ #include "interface/terminal.h"
+ 
+ #include <stdarg.h>
++#include <stdlib.h>
+ #include <time.h>
+ 
+ /* ---------- constants */
+@@ -274,6 +275,17 @@
+ 		"c:\\halo\\SOURCE\\cseries\\errors.c",
+ 		0x61,
+ 		priority>=0 && priority<NUMBER_OF_ERROR_MESSAGE_PRIORITIES);
++
++#ifdef HALO_MACOS
++	/* Xbox developer messages remain in debug.txt without covering gameplay.
++	 * Fatal/delayed errors and their handling are unchanged. */
++	if (priority == _error_silent)
++	{
++		const char *show_messages = getenv("HALO_DEBUG_MESSAGES");
++		if (!show_messages || csstrcmp(show_messages, "1") != 0)
++			priority = _error_log;
++	}
++#endif
+ 
+ 	if (error_globals.overflow_suppression && priority == _error_silent)
+ 	{
+--- a/source/interface/hud_messaging.c
++++ b/source/interface/hud_messaging.c
+@@ -198,6 +198,10 @@
+ 	NUMBER_OF_TEXT_JUSTIFICATIONS
+ };
+ 
++#ifdef HALO_MACOS
++extern wchar_t const *halo_macos_control_prompt(short icon);
++#endif
++
+ enum hud_icon_type
+ {
+ 	_icon_a_button,
+@@ -1650,6 +1654,9 @@
+ 							if (icon_index < hud_globals->messaging.button_icons.count)
+ 							{
+ 								struct icon_hud_element_definition const *icon;
++#ifdef HALO_MACOS
++                                wchar_t const *mac_prompt;
++#endif
+ 
+ 								icon_index = remap_sticks_for_local_player(
+ 									icon_index,
+@@ -1658,7 +1665,12 @@
+ 									&hud_globals->messaging.button_icons,
+ 									icon_index,
+ 									struct icon_hud_element_definition);
++#ifdef HALO_MACOS
++                                mac_prompt = halo_macos_control_prompt(icon_index);
++                                if (mac_prompt || TEST_FLAG(icon->flags, _hud_icon_use_text_bit))
++#else
+ 								if (TEST_FLAG(icon->flags, _hud_icon_use_text_bit))
++#endif
+ 								{
+ 									real_argb_color text_color;
+ 									wchar_t const *icon_text;
+@@ -1677,6 +1689,9 @@
+ 									icon_text = unicode_string_list_get_string(
+ 										hud_globals->messaging.alternate_icon_text.index,
+ 										icon->text_index);
++#ifdef HALO_MACOS
++                                    if (mac_prompt) icon_text = mac_prompt;
++#endif
+ 									draw_string_set_indents(line_cursor.x0 - line_bounds.x0, 0);
+ 									draw_unicode_string_compute_bounds(
+ 										&line_bounds,
+--- a/source/interface/ui_widget.c
++++ b/source/interface/ui_widget.c
+@@ -3162,7 +3162,11 @@
+ 			handler->function,
+ 			&widget_deleted))
+ 	{
+-		error(_error_silent, "event handler function failed");
++#ifdef HALO_MACOS
++        if (!ui_widget_event_handler_function_is_branch_condition(handler->function))
++#endif
++		    error(_error_silent, "event handler function failed");
++        /* FALSE still chooses conditional widgets, including new-profile naming. */
+ 		function_failed = TRUE;
+ 	}
+ 	else
+--- a/source/interface/ui_widget_event_handler_functions.c
++++ b/source/interface/ui_widget_event_handler_functions.c
+@@ -3504,6 +3504,14 @@
+ 	return TRUE;
+ }
+ 
++#ifdef HALO_MACOS
++boolean ui_widget_event_handler_function_is_branch_condition(word function_index)
++{
++ return (short)function_index >= 0 && function_index < NUMBEROF(event_handler_function_list.functions) &&
++  event_handler_function_list.functions[function_index] == new_campaign_if_no_custom_player_profiles_exist;
++}
++#endif
++
+ boolean ui_widget_event_handler_function_invoke(
+ 	struct widget_instance *widget,
+ 	struct event_record *event,
+@@ -3518,7 +3526,11 @@
+ 	if ((short)function_index >= 0 && function_index < 102)
+ 	{
+ 		result = event_handler_function_list.functions[(short)function_index](widget, event, widget_deleted);
+-		if (!result)
++		if (!result
++#ifdef HALO_MACOS
++            && !ui_widget_event_handler_function_is_branch_condition(function_index)
++#endif
++        )
+ 			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);
+ 		return result;
+ 	}
+--- a/source/interface/ui_widget_event_handler_functions.h
++++ b/source/interface/ui_widget_event_handler_functions.h
+@@ -19,6 +19,11 @@
+ 
+ /* ---------- prototypes/UI_WIDGET_EVENT_HANDLER_FUNCTIONS.C */
+ 
++#ifdef HALO_MACOS
++/* A false condition selects another UI branch; it is not a failed action. */
++boolean ui_widget_event_handler_function_is_branch_condition(word function_index);
++#endif
++
+ boolean ui_widget_event_handler_function_invoke(
+ 	struct widget_instance *widget,
+ 	struct event_record *event,
+--- a/source/networking/network_server_message_handler.c
++++ b/source/networking/network_server_message_handler.c
+@@ -1494,6 +1494,17 @@
+ 					struct network_game_server_client_machine *client_machine =
+ 						network_game_server_get_client_machine_at_address(server, source_address->address.long_words[0]);
+ 
++#ifdef HALO_MACOS
++					/* Opt-in local transport diagnosis; no packet or state changes. */
++					{
++						static long traced, enabled = -1;
++						if (enabled < 0) enabled = getenv("HALO_NETWORK_TRACE") && strcmp(getenv("HALO_NETWORK_TRACE"), "1") == 0;
++						if (enabled && (++traced <= 16 || traced % 300 == 0))
++							fprintf(stderr, "[mp-predecode] n=%ld source=%08lX port=%u size=%u match=%d state=%d\n", traced,
++								source_address->address.long_words[0], (unsigned)source_address->port,
++								(unsigned)datagram_size, client_machine != NULL, (int)network_game_server_get_state(server, NULL));
++					}
++#endif
+ 					if (client_machine && network_game_server_get_state(server, NULL) == _network_game_server_state_ingame)
+ 					{
+ 						long machine_index;
+--- a/source/saved games/game_state_xbox.c
++++ b/source/saved games/game_state_xbox.c
+@@ -548,6 +548,16 @@
+ 		{
+ 			stored_checksum = *header_checksum;
+ 
++#ifdef HALO_MACOS
++			/* A new profile's storage is intentionally zero-filled by
++			 * game_state_open_persistent_storage. It has no checkpoint yet. */
++			if (!stored_checksum)
++			{
++				CloseHandle(file);
++				return FALSE;
++			}
++#endif
++
+ 			crc_new(&checksum);
+ 			*header_checksum = 0;
+ 			crc_checksum_buffer(&checksum, header, header_size);

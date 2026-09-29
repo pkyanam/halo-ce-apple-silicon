@@ -1,0 +1,10 @@
+{
+  "fixture": "genuine-USA-Rev1-XISO-HTTP-range",
+  "partition_offset": 0,
+  "image_bytes": 3546677248,
+  "assets": 29,
+  "map_builds": [
+    "01.10.12.2276"
+  ],
+  "extents_match_hashed_asset_inventory": true
+}

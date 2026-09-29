@@ -1,0 +1,15 @@
+.work/
+build/
+venv/
+__pycache__/
+*.pyc
+*.iso
+*.xiso
+*.xbe
+*.elf
+*.map
+*.bik
+*.xmv
+*.dylib
+*.app/
+.DS_Store

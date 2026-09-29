@@ -1,0 +1,17 @@
+{
+  "status": "integrated-current-checkout-prepare-smoke-passed",
+  "upstream_commit": "0ef2ed7dc7a96299ea7d8d02a1bc3f9fb1c231af",
+  "indexed_source_files": 7021,
+  "halo_source_fetch_skipped": true,
+  "mac_source_patch_skipped": true,
+  "overlay_replacement_skipped": true,
+  "pinned_runtime_and_verified_musl_prepared": true,
+  "i386_types_and_hybrid_syscalls_generated": true,
+  "msvc_headers_generated": true,
+  "provenance_uses_relative_file_hashes": true,
+  "game_compiled": false,
+  "game_launched": false,
+  "limits": [
+    "Provisional source snapshot; final source acceptance and full clean build remain required."
+  ]
+}
